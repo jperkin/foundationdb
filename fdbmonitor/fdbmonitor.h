@@ -50,7 +50,7 @@ constexpr double MEMORY_CHECK_INTERVAL = 2.0; // seconds
 
 #ifdef __linux__
 typedef fd_set* fdb_fd_set;
-#elif defined(__APPLE__) || defined(__FreeBSD__)
+#elif defined(__APPLE__) || defined(__FreeBSD__) || defined(__illumos__)
 typedef int fdb_fd_set;
 #endif
 

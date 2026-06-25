@@ -29,6 +29,12 @@
 #include <sys/event.h>
 #endif
 
+#if defined(__illumos__)
+#include <port.h>
+#include <poll.h>
+#include <time.h>
+#endif
+
 #include "fdbmonitor.h"
 #include "SimpleOpt/SimpleOpt.h"
 #include "fdbclient/versions.h"
@@ -60,6 +66,33 @@ volatile bool child_exited = false;
 #ifdef __linux__
 void child_handler(int sig) {
 	child_exited = true;
+}
+#endif
+
+#if defined(__illumos__)
+// illumos event ports have no PORT_SOURCE_SIGNAL, so a signal handler funnels
+// signal numbers through a self-pipe that the port loop watches as an fd.
+static int sig_pipe[2] = { -1, -1 };
+
+void port_signal_handler(int sig) {
+	unsigned char c = (unsigned char)sig;
+	ssize_t n = write(sig_pipe[1], &c, 1);
+	(void)n;
+}
+
+// Arm or re-arm a one-shot FEN (PORT_SOURCE_FILE) watch on path. name_storage
+// keeps fo_name valid for the lifetime of the association.
+static void fen_watch(int port, file_obj* fo, std::string& name_storage, const std::string& path, int events) {
+	struct stat st;
+	if (stat(path.c_str(), &st) < 0) {
+		return;
+	}
+	name_storage = path;
+	fo->fo_name = const_cast<char*>(name_storage.c_str());
+	fo->fo_atime = st.st_atim;
+	fo->fo_mtime = st.st_mtim;
+	fo->fo_ctime = st.st_ctim;
+	port_associate(port, PORT_SOURCE_FILE, (uintptr_t)fo, events, fo);
 }
 #endif
 
@@ -267,6 +300,54 @@ int main(int argc, char** argv) {
 	// Watch the directory holding the configuration file
 	watch_conf_dir(kq, &confd_fd, confdir);
 
+#elif defined(__illumos__)
+	int port = port_create();
+	if (port < 0) {
+		log_err("port_create", errno, "Unable to create event port");
+		exit(1);
+	}
+	watched_fds = port;
+
+	if (pipe(sig_pipe) < 0) {
+		log_err("pipe", errno, "Unable to create signal pipe");
+		exit(1);
+	}
+	fcntl(sig_pipe[0], F_SETFL, O_NONBLOCK);
+	fcntl(sig_pipe[1], F_SETFL, O_NONBLOCK);
+	fcntl(sig_pipe[0], F_SETFD, FD_CLOEXEC);
+	fcntl(sig_pipe[1], F_SETFD, FD_CLOEXEC);
+
+	struct sigaction port_sa = {};
+	port_sa.sa_handler = port_signal_handler;
+	sigemptyset(&port_sa.sa_mask);
+	port_sa.sa_flags = SA_RESTART;
+	sigaction(SIGHUP, &port_sa, nullptr);
+	sigaction(SIGINT, &port_sa, nullptr);
+	sigaction(SIGTERM, &port_sa, nullptr);
+	sigaction(SIGCHLD, &port_sa, nullptr);
+
+	port_associate(port, PORT_SOURCE_FD, sig_pipe[0], POLLIN, nullptr);
+
+	file_obj confd_fo = {};
+	file_obj conff_fo = {};
+	std::string confd_name;
+	std::string conff_name;
+
+	// One-shot debounce timer for conf-dir changes, delivered through the port.
+	port_notify_t conf_pn = {};
+	conf_pn.portnfy_port = port;
+	struct sigevent conf_sev = {};
+	conf_sev.sigev_notify = SIGEV_PORT;
+	conf_sev.sigev_value.sival_ptr = &conf_pn;
+	timer_t conf_timer;
+	if (timer_create(CLOCK_MONOTONIC, &conf_sev, &conf_timer) < 0) {
+		log_err("timer_create", errno, "Unable to create conf debounce timer");
+		exit(1);
+	}
+
+	// Watch the directory holding the configuration file
+	fen_watch(port, &confd_fo, confd_name, confdir, FILE_MODIFIED);
+
 #endif
 
 #ifdef __linux__
@@ -283,7 +364,7 @@ int main(int argc, char** argv) {
 	/* normal will be restored in our main loop in the call to
 	   pselect, but none blocks all signals while processing events */
 	sigprocmask(SIG_SETMASK, &full_mask, &normal_mask);
-#elif defined(__APPLE__) || defined(__FreeBSD__)
+#elif defined(__APPLE__) || defined(__FreeBSD__) || defined(__illumos__)
 	sigprocmask(0, nullptr, &normal_mask);
 #endif
 
@@ -353,6 +434,10 @@ int main(int argc, char** argv) {
 			load_conf(confpath.c_str(), uid, gid, &normal_mask, watched_fds, &maxfd);
 			watch_conf_file(kq, &conff_fd, confpath.c_str());
 			watch_conf_dir(kq, &confd_fd, confdir);
+#elif defined(__illumos__)
+			load_conf(confpath.c_str(), uid, gid, &normal_mask, watched_fds, &maxfd);
+			fen_watch(port, &conff_fo, conff_name, confpath, FILE_MODIFIED | FILE_ATTRIB);
+			fen_watch(port, &confd_fo, confd_name, confdir, FILE_MODIFIED);
 #endif
 		}
 
@@ -463,6 +548,65 @@ int main(int argc, char** argv) {
 			}
 		} else {
 			reload = true;
+		}
+#elif defined(__illumos__)
+		port_event_t pe;
+		int pr = -1;
+		int perrno = 0;
+		if (timeout < 0) {
+			pr = port_get(port, &pe, nullptr);
+			perrno = errno;
+		} else if (timeout > 0) {
+			pr = port_get(port, &pe, &tv);
+			perrno = errno;
+		}
+
+		if (timeout == 0 || (pr < 0 && perrno == ETIME)) {
+			is_timeout = true;
+			if (!timeout_for_rss_check) {
+				reload = true;
+			}
+		} else if (pr == 0) {
+			switch (pe.portev_source) {
+			case PORT_SOURCE_FILE:
+				// This could be the conf dir or conf file
+				if (pe.portev_object == (uintptr_t)&confd_fo) {
+					/* Changes in the directory holding the conf file; schedule a future timeout to reset watches and
+					 * reload the conf */
+					struct itimerspec its = {};
+					its.it_value.tv_nsec = 200 * 1000 * 1000;
+					timer_settime(conf_timer, 0, &its, nullptr);
+					fen_watch(port, &confd_fo, confd_name, confdir, FILE_MODIFIED);
+				} else {
+					/* Direct writes to the conf file; reload! (re-armed by the reload path) */
+					reload = true;
+				}
+				break;
+			case PORT_SOURCE_TIMER:
+				reload = true;
+				break;
+			case PORT_SOURCE_FD:
+				if (pe.portev_object == (uintptr_t)sig_pipe[0]) {
+					unsigned char c;
+					while (read(sig_pipe[0], &c, 1) == 1) {
+						int sig = c;
+						if (sig == SIGCHLD) {
+							child_exited = true;
+						} else if (sig > exit_signal) {
+							exit_signal = sig;
+						}
+					}
+					port_associate(port, PORT_SOURCE_FD, sig_pipe[0], POLLIN, nullptr);
+				} else {
+					auto* cmd = (Command*)pe.portev_user;
+					for (int i = 0; i < 2; i++) {
+						if (pe.portev_object == (uintptr_t)cmd->pipes[i][0]) {
+							read_child_output(cmd, i, watched_fds);
+						}
+					}
+				}
+				break;
+			}
 		}
 #endif
 

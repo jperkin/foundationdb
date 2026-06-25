@@ -45,6 +45,11 @@
 #include <mach/mach_time.h>
 #endif
 
+#ifdef __illumos__
+#include <port.h>
+#include <poll.h>
+#endif
+
 #include <stdlib.h>
 #include <unordered_map>
 #include <unordered_set>
@@ -86,7 +91,7 @@ int severity_to_priority(Severity severity) {
 }
 
 double timer() {
-#if defined(__linux__) || defined(__FreeBSD__)
+#if defined(__linux__) || defined(__FreeBSD__) || defined(__illumos__)
 	struct timespec ts;
 	clock_gettime(CLOCK_MONOTONIC, &ts);
 	return double(ts.tv_sec) + (ts.tv_nsec * 1e-9);
@@ -177,6 +182,9 @@ void monitor_fd(fdb_fd_set list, int fd, int* maxfd, void* cmd) {
 	struct kevent ev;
 	EV_SET(&ev, fd, EVFILT_READ, EV_ADD, 0, 0, cmd);
 	kevent(list, &ev, 1, nullptr, 0, nullptr); // FIXME: check?
+#elif defined(__illumos__)
+	/* ignore maxfd; PORT_SOURCE_FD is one-shot, re-armed after each read */
+	port_associate(list, PORT_SOURCE_FD, fd, POLLIN, cmd);
 #endif
 }
 
@@ -187,6 +195,8 @@ void unmonitor_fd(fdb_fd_set list, int fd) {
 	struct kevent ev;
 	EV_SET(&ev, fd, EVFILT_READ, EV_DELETE, 0, 0, nullptr);
 	kevent(list, &ev, 1, nullptr, 0, nullptr); // FIXME: check?
+#elif defined(__illumos__)
+	port_dissociate(list, PORT_SOURCE_FD, fd);
 #endif
 }
 
@@ -795,6 +805,13 @@ void read_child_output(Command* cmd, int pipe_idx, fdb_fd_set fds) {
 	if (start < len) {
 		log_process_msg(priority, cmd->ssection.c_str(), "%.*s\n", len - start, buf + start);
 	}
+
+#if defined(__illumos__)
+	// PORT_SOURCE_FD is one-shot; re-arm while the pipe is still open.
+	if (len > 0) {
+		monitor_fd(fds, cmd->pipes[pipe_idx][0], nullptr, cmd);
+	}
+#endif
 }
 
 #if defined(__APPLE__) || defined(__FreeBSD__)

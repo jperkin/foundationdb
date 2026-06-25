@@ -23,15 +23,6 @@
 #if defined(__illumos__)
 
 /*
- * Some illumos toolchains incorrectly define __STDC_VERSION__ even when
- * compiling C++.  Headers that gate the C99 `restrict` keyword on it (e.g.
- * xxhash.h) then emit a bare `restrict`, which is not a keyword in C++.
- */
-#if defined(__cplusplus) && defined(__STDC_VERSION__)
-#undef __STDC_VERSION__
-#endif
-
-/*
  * illumos <unistd.h> exposes a legacy SVID `yield(void)` (gated on
  * __EXTENSIONS__, which this build sets globally) that collides with flow's
  * `Future<Void> yield(TaskPriority)`: a no-argument `yield()` is ambiguous

@@ -2084,7 +2084,7 @@ XXH_PUBLIC_API XXH64_hash_t XXH64_hashFromCanonical(const XXH64_canonical_t* src
 
 /* ===   Compiler specifics   === */
 
-#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 199901L /* >= C99 */
+#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 199901L && !defined(__cplusplus) /* >= C99, C only */
 #define XXH_RESTRICT restrict
 #else
 /* Note: it might be useful to define __restrict or __restrict__ for some C++ compilers */

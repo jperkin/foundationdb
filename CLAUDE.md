@@ -71,6 +71,10 @@ upstream. Key files to know:
 - `fdbrpc/libeio/config.h.SunOS` — autoconf config for the vendored
   libeio; routes through the existing `__solaris` `sendfilev(3EXT)`
   branch.
+- `flow/include/flow/xxhash.h` — one-line patch to the `XXH_RESTRICT` gate
+  (`&& !defined(__cplusplus)`). Some illumos toolchains define
+  `__STDC_VERSION__` in C++, which made xxhash emit the bare C `restrict`
+  keyword (invalid in C++). No-op everywhere else; re-apply on xxhash update.
 
 ## Platform conventions
 

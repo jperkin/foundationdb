@@ -240,7 +240,9 @@ else()
     add_compile_options("$<${is_cxx_compile}:-gdwarf-4>")
   endif()
 
-  if(FDB_RELEASE OR FULL_DEBUG_SYMBOLS OR CMAKE_BUILD_TYPE STREQUAL "Debug")
+  if(CMAKE_SYSTEM_NAME STREQUAL "SunOS")
+    add_compile_options("$<${is_cxx_compile}:-g0>")
+  elseif(FDB_RELEASE OR FULL_DEBUG_SYMBOLS OR CMAKE_BUILD_TYPE STREQUAL "Debug")
     # Configure with FULL_DEBUG_SYMBOLS=ON to generate all symbols for debugging with gdb
     # Also generating full debug symbols in release builds. CPack will strip them out
     # and create a debuginfo rpm

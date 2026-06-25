@@ -166,10 +166,7 @@ foreach(ft flow flow_sampling flowlinktest flow_test)
     endif()
   endif()
   if(CMAKE_SYSTEM_NAME STREQUAL "SunOS")
-    # illumos: kstat(3KSTAT) for system stats, execinfo for backtrace(3EXECINFO),
-    # nsl/socket for network syscalls, elf for symbol resolution, sendfile for
-    # libeio's sendfilev(3EXT) path.
-    set(FLOW_LIBS ${FLOW_LIBS} kstat execinfo nsl socket elf sendfile)
+    set(FLOW_LIBS ${FLOW_LIBS} kstat nsl socket elf sendfile)
   endif()
   target_link_libraries(${ft} PRIVATE ${FLOW_LIBS})
 

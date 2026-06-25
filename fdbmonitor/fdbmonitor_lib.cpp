@@ -20,6 +20,7 @@
 
 #include <csignal>
 #include <limits>
+#include <limits.h>
 #include <sys/time.h>
 #ifndef _WIN32
 #include <unistd.h>

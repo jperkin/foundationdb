@@ -43,7 +43,7 @@
 #include "config.h.FreeBSD"
 #elif defined(__APPLE__)
 #include "config.h.osx"
-#elif defined(__sun) && defined(__SVR4)
+#elif defined(__illumos__)
 #include "config.h.SunOS"
 #endif
 
@@ -260,7 +260,7 @@ struct statvfs {
 #include <sys/uio.h>
 #elif __hpux
 #include <sys/socket.h>
-#elif __solaris || (defined(__sun) && defined(__SVR4))
+#elif __solaris || defined(__illumos__)
 #include <sys/sendfile.h>
 #else
 #error sendfile support requested but not available
@@ -1025,7 +1025,7 @@ static eio_ssize_t eio__sendfile(int ofd, int ifd, off_t offset, size_t count) {
 #elif __hpux
 		res = sendfile(ofd, ifd, offset, count, 0, 0);
 
-#elif __solaris || (defined(__sun) && defined(__SVR4))
+#elif __solaris || defined(__illumos__)
 		struct sendfilevec vec;
 		size_t sbytes;
 
@@ -1083,7 +1083,7 @@ static eio_ssize_t eio__sendfile(int ofd, int ifd, off_t offset, size_t count) {
 #ifdef EOPNOTSUPP /* windows */
 	                || errno == EOPNOTSUPP /* BSDs */
 #endif
-#if __solaris || (defined(__sun) && defined(__SVR4))
+#if __solaris || defined(__illumos__)
 	                || errno == EAFNOSUPPORT || errno == EPROTOTYPE
 #endif
 	                )) {

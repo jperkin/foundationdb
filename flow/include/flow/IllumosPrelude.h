@@ -21,7 +21,7 @@
 #ifndef FLOW_ILLUMOS_PRELUDE_H
 #define FLOW_ILLUMOS_PRELUDE_H
 
-#if defined(__sun) && defined(__SVR4)
+#if defined(__illumos__)
 
 /*
  * illumos <unistd.h> exposes a legacy BSD `yield(void)` that collides with
@@ -75,6 +75,6 @@
 #undef UESP
 #undef TRAPNO
 
-#endif /* __sun && __SVR4 */
+#endif /* __illumos__ */
 
 #endif /* FLOW_ILLUMOS_PRELUDE_H */

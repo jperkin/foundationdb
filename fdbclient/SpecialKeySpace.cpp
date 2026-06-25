@@ -2245,7 +2245,7 @@ void parse(StringRef& val, time_t& t) {
 		throw std::runtime_error("failed to convert ISO 8601 datetime");
 	}
 	timezone = -timezone;
-#elif defined(__sun) && defined(__SVR4)
+#elif defined(__illumos__)
 	// illumos strptime(3C) does not honour %z and struct tm has no tm_gmtoff.
 	// Parse the canonical part, then manually capture the offset suffix.
 	char* rest = ::strptime(val.toString().c_str(), "%FT%T", &tm);

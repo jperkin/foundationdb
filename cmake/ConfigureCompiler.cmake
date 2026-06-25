@@ -52,6 +52,12 @@ endif()
 env_set(USE_JEMALLOC ${jemalloc_default} BOOL "Link with jemalloc")
 
 if(CMAKE_SYSTEM_NAME STREQUAL "SunOS")
+  # Force-include the illumos prelude so the libc `yield` symbol is renamed out
+  # of the way before any system header can declare it.  This must precede every
+  # other include, which a normal #include cannot guarantee; see
+  # flow/include/flow/IllumosPrelude.h.
+  add_compile_options(
+    "$<${is_cxx_compile}:-include${CMAKE_SOURCE_DIR}/flow/include/flow/IllumosPrelude.h>")
   # illumos hides large parts of POSIX/XOPEN/threads behind feature-test
   # gates. Set them globally so headers expose strerror_r, the POSIX
   # pthread_* semantics, and the full <sys/*> type set without per-file

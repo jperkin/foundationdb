@@ -52,9 +52,14 @@ Two commits on `illumos-port` cover everything platform-specific:
 `git log --stat 978706fa7^..4e75fab16` is the full diff against
 upstream. Key files to know:
 
-- `flow/include/flow/Platform.h` — the `#if defined(__illumos__)` block at
-  the very top renames libc symbols that collide with FDB globals (`yield`,
-  `index_t`) before any system header sees them.
+- `flow/include/flow/IllumosPrelude.h` — force-included before any other header
+  (via `ConfigureCompiler.cmake`) to rename libc `yield` out of the way before
+  `<unistd.h>` declares it. Force-include is required: it must run first, which
+  a normal `#include` cannot guarantee.
+- `fdbserver/coroimpl/CoroFlowCoro.actor.cpp` — `#undef ERR` after `Coro.h`.
+  `Coro.h` drags in `<ucontext.h>` -> `<sys/regset.h>`, whose `ERR` register
+  macro is the only one that collides with FDB code (`SpanStatus::ERR`). Handled
+  locally, like the `<windows.h>` min/max undefs, rather than globally.
 - `flow/Platform.cpp` — the `namespace illumos` block (next to `linux_os`)
   holds the kstat / procfs / getloadavg helpers; called from the file's
   `__illumos__` arms.

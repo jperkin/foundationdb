@@ -22,64 +22,6 @@
 #define FLOW_PLATFORM_H
 #pragma once
 
-#if defined(__illumos__)
-/*
- * illumos prelude: rename libc symbols that collide with FoundationDB's global
- * names out of the way before any system header declares them.  Kept at the
- * very top of Platform.h, which is reached early in most translation units and
- * pulls in the colliding <unistd.h> / <sys/regset.h> declarations below.
- */
-
-/*
- * illumos <unistd.h> exposes a legacy BSD `yield(void)` that collides with
- * flow's `Future<Void> yield(TaskPriority)`.  Rename the libc symbol out of
- * the way before it is declared.  FDB does not call the libc yield().
- */
-#define yield __illumos_libc_yield_do_not_use
-#include <unistd.h>
-#undef yield
-
-/*
- * illumos <sys/types.h> typedefs `index_t` and other short names that can
- * collide with template aliases.  We rename flow's template alias instead
- * (see ObjectSerializerTraits.h -> pack_index_t) rather than undefining here,
- * so leave the libc typedef intact.
- */
-
-/*
- * illumos <sys/regset.h> defines the x86 register names CS, DS, ES, FS, GS, SS,
- * ERR, EIP, ESP, EBP, EAX, EBX, ECX, EDX, ESI, EDI, EFL, UESP, TRAPNO and the
- * AMD64 variants as integer macros.  The header is pulled in transitively by
- * <ucontext.h> and <procfs.h> (used in the __illumos__ arms of Platform.cpp).
- * The macros routinely collide with two- or three-letter identifiers in C++
- * code (enum values, template parameters, structure members), so eagerly
- * include the header here and undefine the macros before any FDB code sees
- * them.  This costs nothing on TUs that do not need the register names and
- * removes a class of cryptic compile errors that surface only when an unrelated
- * header path happens to drag regset.h in first.
- */
-#include <sys/regset.h>
-#undef CS
-#undef DS
-#undef ES
-#undef FS
-#undef GS
-#undef SS
-#undef ERR
-#undef EIP
-#undef ESP
-#undef EBP
-#undef EAX
-#undef EBX
-#undef ECX
-#undef EDX
-#undef ESI
-#undef EDI
-#undef EFL
-#undef UESP
-#undef TRAPNO
-#endif // __illumos__
-
 #include "flow/config.h"
 
 #if (defined(__linux__) || defined(__APPLE__) || defined(__FreeBSD__) || \

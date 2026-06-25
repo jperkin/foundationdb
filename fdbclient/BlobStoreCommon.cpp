@@ -20,7 +20,8 @@
 
 #include "fdbclient/IBlobStore.h"
 #include "fdbclient/S3BlobStore.h"
-#include "fdbclient/ClientKnobs.h"
+#include "GCSBlobStore.h"
+#include "fdbclient/Knobs.h"
 #include "flow/Hostname.h"
 #include "flow/IAsyncFile.h"
 #include "flow/IConnection.h"
@@ -240,6 +241,14 @@ std::string IBlobStoreEndpoint::getResourceURL(std::string resource, std::string
 		params.append(knobParams);
 	}
 
+	if (!region.empty()) {
+		if (!params.empty()) {
+			params.append("&");
+		}
+		params.append("region=");
+		params.append(region);
+	}
+
 	for (const auto& [k, v] : extraHeaders) {
 		if (!params.empty()) {
 			params.append("&");
@@ -319,18 +328,20 @@ Reference<IBlobStoreEndpoint> IBlobStoreEndpoint::fromString(const std::string& 
 		// hostPort is at least a host or IP address, optionally followed by :portNumber or :serviceName
 		StringRef h(hostPort);
 		StringRef host = h.eat(":");
-		if (host.size() == 0)
+		if (host.empty())
 			throw std::string("host cannot be empty");
 
 		StringRef service = h.eat();
 
 		std::string region;
+		std::string gcsProjectId;
+		std::string provider = "s3";
 
 		BlobKnobs knobs;
 		HTTP::Headers extraHeaders;
 		while (1) {
 			StringRef name = t.eat("=");
-			if (name.size() == 0)
+			if (name.empty())
 				break;
 			StringRef value = t.eat("&");
 
@@ -339,7 +350,7 @@ Reference<IBlobStoreEndpoint> IBlobStoreEndpoint::fromString(const std::string& 
 				StringRef originalValue = value;
 				StringRef headerFieldName = value.eat(":");
 				StringRef headerFieldValue = value;
-				if (headerFieldName.size() == 0 || headerFieldValue.size() == 0) {
+				if (headerFieldName.empty() || headerFieldValue.empty()) {
 					throw format("'%s' is not a valid value for '%s' parameter.  Format is <FieldName>:<FieldValue> "
 					             "where strings are not empty.",
 					             originalValue.toString().c_str(),
@@ -358,6 +369,16 @@ Reference<IBlobStoreEndpoint> IBlobStoreEndpoint::fromString(const std::string& 
 			// overwrite region from parameter
 			if (name == "region"_sr) {
 				region = value.toString();
+				continue;
+			}
+
+			if (name == "gcs_project_id"_sr || name == "gcspid"_sr) {
+				gcsProjectId = value.toString();
+				continue;
+			}
+
+			if (name == "provider"_sr || name == "p"_sr) {
+				provider = value.toString();
 				continue;
 			}
 
@@ -390,6 +411,11 @@ Reference<IBlobStoreEndpoint> IBlobStoreEndpoint::fromString(const std::string& 
 
 		if (resourceFromURL != nullptr)
 			*resourceFromURL = resource.toString();
+
+		if (provider == "gcs") {
+			return makeReference<GCSBlobStoreEndpoint>(
+			    host.toString(), service.toString(), proxyHost, proxyPort, cred, gcsProjectId, knobs, extraHeaders);
+		}
 
 		return makeReference<S3BlobStoreEndpoint>(
 		    host.toString(), service.toString(), region, proxyHost, proxyPort, cred, knobs, extraHeaders);
@@ -892,7 +918,7 @@ Future<Reference<HTTP::IncomingResponse>> doRequest_impl(Reference<IBlobStoreEnd
 				connectionFailed = true;
 			}
 		}
-		event.suppressFor(60);
+		event.suppressFor(1);
 		if (!err.present()) {
 			event.detail("ResponseCode", r->code);
 		}

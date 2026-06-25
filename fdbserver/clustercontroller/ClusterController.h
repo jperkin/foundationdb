@@ -27,6 +27,7 @@
 #include "fdbrpc/Replication.h"
 #include "fdbrpc/ReplicationUtils.h"
 #include "ClusterHealthMonitor.h"
+#include "RatekeeperMonitor.h"
 #include "fdbserver/core/Knobs.h"
 #include "fdbserver/core/WorkerInterface.actor.h"
 #include "fdbrpc/Locality.h"
@@ -63,7 +64,7 @@ struct WorkerInfo : NonCopyable {
 	  : watcher(watcher), reply(reply), gen(gen), reboots(0), initialClass(initialClass), priorityInfo(priorityInfo),
 	    details(interf, processClass, degraded, recoveredDiskFiles), issues(issues) {}
 
-	WorkerInfo(WorkerInfo&& r) noexcept
+	explicit(false) WorkerInfo(WorkerInfo&& r) noexcept
 	  : watcher(std::move(r.watcher)), reply(std::move(r.reply)), gen(r.gen), reboots(r.reboots),
 	    initialClass(r.initialClass), priorityInfo(r.priorityInfo), details(std::move(r.details)),
 	    haltRatekeeper(r.haltRatekeeper), haltDistributor(r.haltDistributor),
@@ -355,7 +356,7 @@ public:
 	    Optional<Optional<Standalone<StringRef>>> const& dcId = Optional<Optional<Standalone<StringRef>>>()) {
 		std::map<ProcessClass::Fitness, std::vector<WorkerDetails>> fitness_workers;
 		std::vector<WorkerDetails> results;
-		Reference<LocalitySet> logServerSet = Reference<LocalitySet>(new LocalityMap<WorkerDetails>());
+		Reference<LocalitySet> logServerSet = makeReference<LocalityMap<WorkerDetails>>();
 		LocalityMap<WorkerDetails>* logServerMap = (LocalityMap<WorkerDetails>*)logServerSet.getPtr();
 		bool bCompleted = false;
 
@@ -996,7 +997,7 @@ public:
 	    const std::vector<UID>& exclusionWorkerIds = {}) {
 		std::map<std::tuple<ProcessClass::Fitness, int, bool, bool>, std::vector<WorkerDetails>> fitness_workers;
 		std::vector<WorkerDetails> results;
-		Reference<LocalitySet> logServerSet = Reference<LocalitySet>(new LocalityMap<WorkerDetails>());
+		Reference<LocalitySet> logServerSet = makeReference<LocalityMap<WorkerDetails>>();
 		LocalityMap<WorkerDetails>* logServerMap = (LocalityMap<WorkerDetails>*)logServerSet.getPtr();
 		bool bCompleted = false;
 		desired = std::max(required, desired);
@@ -1839,6 +1840,7 @@ public:
 		}
 
 		if (req.configuration.backupWorkerEnabled) {
+			ASSERT(!req.configuration.rangeBackupWorkerEnabled);
 			const int nBackup = std::max<int>(
 			    (req.configuration.desiredLogRouterCount > 0 ? req.configuration.desiredLogRouterCount : tlogs.size()),
 			    req.maxOldLogRouters);
@@ -1846,6 +1848,19 @@ public:
 			    getWorkersForRoleInDatacenter(dcId, ProcessClass::Backup, nBackup, req.configuration, id_used);
 			std::transform(backupWorkers.begin(),
 			               backupWorkers.end(),
+			               std::back_inserter(result.backupWorkers),
+			               [](const WorkerDetails& w) { return w.interf; });
+		}
+
+		if (req.configuration.rangeBackupWorkerEnabled) {
+			ASSERT(!req.configuration.backupWorkerEnabled);
+			const int nRangeBackup = req.configuration.desiredRangeBackupWorkerCount > 0
+			                             ? req.configuration.desiredRangeBackupWorkerCount
+			                             : tlogs.size();
+			auto rangeBackupWorkers =
+			    getWorkersForRoleInDatacenter(dcId, ProcessClass::Backup, nRangeBackup, req.configuration, id_used);
+			std::transform(rangeBackupWorkers.begin(),
+			               rangeBackupWorkers.end(),
 			               std::back_inserter(result.backupWorkers),
 			               [](const WorkerDetails& w) { return w.interf; });
 		}
@@ -2083,11 +2098,25 @@ public:
 						}
 
 						if (req.configuration.backupWorkerEnabled) {
+							ASSERT(!req.configuration.rangeBackupWorkerEnabled);
 							const int nBackup = std::max<int>(tlogs.size(), req.maxOldLogRouters);
 							auto backupWorkers = getWorkersForRoleInDatacenter(
 							    dcId, ProcessClass::Backup, nBackup, req.configuration, used);
 							std::transform(backupWorkers.begin(),
 							               backupWorkers.end(),
+							               std::back_inserter(result.backupWorkers),
+							               [](const WorkerDetails& w) { return w.interf; });
+						}
+
+						if (req.configuration.rangeBackupWorkerEnabled) {
+							ASSERT(!req.configuration.backupWorkerEnabled);
+							const int nRangeBackup = req.configuration.desiredRangeBackupWorkerCount > 0
+							                             ? req.configuration.desiredRangeBackupWorkerCount
+							                             : tlogs.size();
+							auto rangeBackupWorkers = getWorkersForRoleInDatacenter(
+							    dcId, ProcessClass::Backup, nRangeBackup, req.configuration, used);
+							std::transform(rangeBackupWorkers.begin(),
+							               rangeBackupWorkers.end(),
 							               std::back_inserter(result.backupWorkers),
 							               [](const WorkerDetails& w) { return w.interf; });
 						}
@@ -3211,6 +3240,76 @@ public:
 		return !remoteTransactionSystemContainsDegradedServers();
 	}
 
+	// Returns true if the cluster controller can safely trigger a failover to the other region.
+	bool canSafelyTriggerFailoverToRemoteDc() {
+		if (db.config.usableRegions <= 1 || db.config.regions.size() < 2 || !clusterControllerDcId.present()) {
+			return false;
+		}
+
+		if (machineStartTime() == 0 || now() - machineStartTime() < SERVER_KNOBS->INITIAL_UPDATE_CROSS_DC_INFO_DELAY) {
+			return false;
+		}
+
+		if (db.serverInfo->get().recoveryState < RecoveryState::ACCEPTING_COMMITS) {
+			return false;
+		}
+
+		auto ccWorker = id_worker.find(clusterControllerProcessId);
+		if (ccWorker == id_worker.end() || ccWorker->second.priorityInfo.isExcluded) {
+			return false;
+		}
+
+		const bool clusterControllerInPrimary = db.config.regions[0].dcId == clusterControllerDcId.get();
+		const bool clusterControllerInRemote = db.config.regions[1].dcId == clusterControllerDcId.get();
+		if (!clusterControllerInPrimary && !clusterControllerInRemote) {
+			return false;
+		}
+
+		const int targetRegionIndex = clusterControllerInPrimary ? 1 : 0;
+		if (db.config.regions[targetRegionIndex].priority < 0) {
+			return false;
+		}
+
+		return versionDifferenceUpdated && datacenterVersionDifference < SERVER_KNOBS->MAX_VERSION_DIFFERENCE &&
+		       remoteDCIsHealthy();
+	}
+
+	bool triggerFailoverToRemoteDc(const char* reason, Optional<double> tpsLimit = Optional<double>()) {
+		if (db.config.usableRegions <= 1 || db.config.regions.size() < 2 || !clusterControllerDcId.present()) {
+			return false;
+		}
+
+		Optional<Key> remoteDcId;
+		if (db.config.regions[0].dcId == clusterControllerDcId.get()) {
+			remoteDcId = db.config.regions[1].dcId;
+		} else if (db.config.regions[1].dcId == clusterControllerDcId.get()) {
+			remoteDcId = db.config.regions[0].dcId;
+		} else {
+			return false;
+		}
+
+		std::vector<Optional<Key>> dcPriority;
+		dcPriority.push_back(remoteDcId);
+		dcPriority.push_back(clusterControllerDcId);
+
+		if (desiredDcIds.get().present() && desiredDcIds.get().get() == dcPriority) {
+			return false;
+		}
+
+		TraceEvent(SevWarn, "ClusterControllerTriggerFailover", id)
+		    .detail("Reason", reason)
+		    .detail("CurrentClusterControllerDcId", printable(clusterControllerDcId))
+		    .detail("TargetPrimaryDcId", printable(remoteDcId));
+		if (tpsLimit.present()) {
+			TraceEvent(SevInfo, "ClusterControllerTriggerFailoverMetrics", id)
+			    .detail("Reason", reason)
+			    .detail("TPSLimit", tpsLimit.get())
+			    .detail("ZeroTpsDuration", ratekeeperMonitor.getZeroRatekeeperTpsLimitDuration());
+		}
+		desiredDcIds.set(dcPriority);
+		return true;
+	}
+
 	// Returns true when the cluster controller should trigger a recovery due to degraded servers used in the
 	// transaction system in the primary data center.
 	bool shouldTriggerRecoveryDueToDegradedServers() {
@@ -3236,8 +3335,8 @@ public:
 		    .detail("TransactionSystemContainsDegradedServers", txnSystemContainsDegradedServers);
 		return txnSystemContainsDegradedServers;
 	}
-	// Returns true when the cluster controller should trigger a failover due to degraded servers used in the
-	// transaction system in the primary data center, and no degradation in the remote data center.
+	// Returns true when degraded servers in the primary transaction system make a remote failover desirable.
+	// Call `canSafelyTriggerFailoverToRemoteDc()` before actually triggering the failover.
 	bool shouldTriggerFailoverDueToDegradedServers() {
 		if (db.config.usableRegions <= 1) {
 			return false;
@@ -3337,6 +3436,7 @@ public:
 
 	bool remoteDCMonitorStarted;
 	bool remoteTransactionSystemDegraded;
+	RatekeeperMonitor ratekeeperMonitor;
 
 	// recruitX is used to signal when role X needs to be (re)recruited.
 	// recruitingXID is used to track the ID of X's interface which is being recruited.

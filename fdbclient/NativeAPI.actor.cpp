@@ -25,6 +25,7 @@
 #include <iterator>
 #include <limits>
 #include <memory>
+#include <random>
 #include <regex>
 #include <string>
 #include <unordered_set>
@@ -54,10 +55,10 @@
 #include "fdbclient/DatabaseContext.h"
 #include "fdbclient/GlobalConfig.h"
 #include "fdbclient/JsonBuilder.h"
-#include "fdbclient/KeyBackedTypes.actor.h"
+#include "fdbclient/KeyBackedTypes.h"
 #include "fdbclient/KeyRangeMap.h"
 #include "fdbclient/ManagementAPI.h"
-#include "fdbclient/NameLineage.h"
+#include "NameLineage.h"
 #include "fdbclient/CommitProxyInterface.h"
 #include "fdbclient/MonitorLeader.h"
 #include "fdbclient/MutationList.h"
@@ -74,6 +75,7 @@
 #include "fdbrpc/sim_validation.h"
 #include "flow/Arena.h"
 #include "flow/ActorCollection.h"
+#include "flow/CoroUtils.h"
 #include "flow/DeterministicRandom.h"
 #include "flow/Error.h"
 #include "flow/FastRef.h"
@@ -144,9 +146,6 @@ Future<Void> refreshTransaction(DatabaseContext* self, Transaction* tr) {
 	co_await delay(0); // Give ourselves the chance to get cancelled if self was destroyed
 	*tr = Transaction(Database(Reference<DatabaseContext>::addRef(self)));
 }
-
-// FIXME: get a prototype in a header file, ugh.
-ACTOR Future<RangeResult> getWorkerInterfaces(Reference<IClusterConnectionRecord> clusterRecord);
 
 Optional<KeyRangeLocationInfo> DatabaseContext::getCachedLocation(const KeyRef& key, Reverse isBackward) {
 	Arena arena;
@@ -1140,18 +1139,18 @@ Future<Optional<std::vector<StorageServerInterface>>> transactionalGetServerInte
     std::vector<UID> ids) {
 	std::vector<Future<Optional<StorageServerInterface>>> serverListEntries;
 	serverListEntries.reserve(ids.size());
-	for (int s = 0; s < ids.size(); s++) {
-		serverListEntries.push_back(fetchServerInterface(trState, ids[s]));
+	for (const auto& id : ids) {
+		serverListEntries.push_back(fetchServerInterface(trState, id));
 	}
 
 	std::vector<Optional<StorageServerInterface>> serverListValues = co_await getAll(serverListEntries);
 	std::vector<StorageServerInterface> serverInterfaces;
-	for (int s = 0; s < serverListValues.size(); s++) {
-		if (!serverListValues[s].present()) {
+	for (const auto& serverListValue : serverListValues) {
+		if (!serverListValue.present()) {
 			// A storage server has been removed from ServerList since we read keyServers
 			co_return Optional<std::vector<StorageServerInterface>>();
 		}
-		serverInterfaces.push_back(serverListValues[s].get());
+		serverInterfaces.push_back(serverListValue.get());
 	}
 	co_return serverInterfaces;
 }
@@ -1166,11 +1165,11 @@ void updateTssMappings(Database cx, const GetKeyServerLocationsReply& reply) {
 		}
 	}
 
-	for (const auto& mapping : reply.resultsTssMapping) {
-		auto ssi = ssiById.find(mapping.first);
+	for (const auto& [storageServerId, tss] : reply.resultsTssMapping) {
+		auto ssi = ssiById.find(storageServerId);
 		ASSERT(ssi != ssiById.end());
-		cx->addTssMapping(*ssi->second, mapping.second);
-		ssiById.erase(mapping.first);
+		cx->addTssMapping(*ssi->second, tss);
+		ssiById.erase(storageServerId);
 	}
 
 	// if SS didn't have a mapping above, it's still in the ssiById map, so remove its tss mapping
@@ -1180,22 +1179,22 @@ void updateTssMappings(Database cx, const GetKeyServerLocationsReply& reply) {
 }
 
 void updateTagMappings(Database cx, const GetKeyServerLocationsReply& reply) {
-	for (const auto& mapping : reply.resultsTagMapping) {
-		cx->addSSIdTagMapping(mapping.first, mapping.second);
+	for (const auto& [storageServerId, tag] : reply.resultsTagMapping) {
+		cx->addSSIdTagMapping(storageServerId, tag);
 	}
 }
 
 // If isBackward == true, returns the shard containing the key before 'key' (an infinitely long, inexpressible key).
 // Otherwise returns the shard containing key
-ACTOR Future<KeyRangeLocationInfo> getKeyLocation_internal(Database cx,
-                                                           Key key,
-                                                           SpanContext spanContext,
-                                                           Optional<UID> debugID,
-                                                           UseProvisionalProxies useProvisionalProxies,
-                                                           Reverse isBackward,
-                                                           Version version) {
+Future<KeyRangeLocationInfo> getKeyLocation_internal(Database cx,
+                                                     Key key,
+                                                     SpanContext spanContext,
+                                                     Optional<UID> debugID,
+                                                     UseProvisionalProxies useProvisionalProxies,
+                                                     Reverse isBackward,
+                                                     Version version) {
 
-	state Span span("NAPI:getKeyLocation"_loc, spanContext);
+	Span span("NAPI:getKeyLocation"_loc, spanContext);
 	if (isBackward) {
 		ASSERT(key != allKeys.begin && key <= allKeys.end);
 	} else {
@@ -1205,32 +1204,28 @@ ACTOR Future<KeyRangeLocationInfo> getKeyLocation_internal(Database cx,
 	if (debugID.present())
 		g_traceBatch.addEvent("TransactionDebug", debugID.get().first(), "NativeAPI.getKeyLocation.Before");
 
-	loop {
+	while (true) {
 		try {
-			wait(cx->getBackoff());
+			co_await cx->getBackoff();
 			++cx->transactionKeyServerLocationRequests;
-			choose {
-				when(wait(cx->onProxiesChanged())) {}
-				when(GetKeyServerLocationsReply rep = wait(basicLoadBalance(
-				         cx->getCommitProxies(useProvisionalProxies),
-				         &CommitProxyInterface::getKeyServersLocations,
-				         GetKeyServerLocationsRequest(
-				             span.context, key, Optional<KeyRef>(), /*limit=*/100, isBackward, version, key.arena()),
-				         TaskPriority::DefaultPromiseEndpoint))) {
-					++cx->transactionKeyServerLocationRequestsCompleted;
-					if (debugID.present())
-						g_traceBatch.addEvent(
-						    "TransactionDebug", debugID.get().first(), "NativeAPI.getKeyLocation.After");
-					ASSERT(rep.results.size() == 1);
+			GetKeyServerLocationsReply rep = co_await commitProxyLoadBalance(
+			    cx,
+			    makeReqBuilder<GetKeyServerLocationsRequest>(
+			        span.context, key, Optional<KeyRef>(), /*limit=*/100, isBackward, version, key.arena()),
+			    &CommitProxyInterface::getKeyServersLocations,
+			    useProvisionalProxies,
+			    TaskPriority::DefaultPromiseEndpoint);
+			++cx->transactionKeyServerLocationRequestsCompleted;
+			if (debugID.present())
+				g_traceBatch.addEvent("TransactionDebug", debugID.get().first(), "NativeAPI.getKeyLocation.After");
+			ASSERT(rep.results.size() == 1);
 
-					auto locationInfo = cx->setCachedLocation(rep.results[0].first, rep.results[0].second);
-					updateTssMappings(cx, rep);
-					updateTagMappings(cx, rep);
+			auto locationInfo = cx->setCachedLocation(rep.results[0].first, rep.results[0].second);
+			updateTssMappings(cx, rep);
+			updateTagMappings(cx, rep);
 
-					cx->updateBackoff(success());
-					return KeyRangeLocationInfo(KeyRange(rep.results[0].first, rep.arena), locationInfo);
-				}
-			}
+			cx->updateBackoff(success());
+			co_return KeyRangeLocationInfo(KeyRange(rep.results[0].first, rep.arena), locationInfo);
 		} catch (Error& e) {
 			if (e.code() == error_code_commit_proxy_memory_limit_exceeded) {
 				// Eats commit_proxy_memory_limit_exceeded error from commit proxies
@@ -1346,55 +1341,47 @@ void DatabaseContext::updateBackoff(const Error& err) {
 	}
 }
 
-ACTOR Future<std::vector<KeyRangeLocationInfo>> getKeyRangeLocations_internal(
-    Database cx,
-    KeyRange keys,
-    int limit,
-    Reverse reverse,
-    SpanContext spanContext,
-    Optional<UID> debugID,
-    UseProvisionalProxies useProvisionalProxies,
-    Version version) {
-	state Span span("NAPI:getKeyRangeLocations"_loc, spanContext);
+Future<std::vector<KeyRangeLocationInfo>> getKeyRangeLocations_internal(Database cx,
+                                                                        KeyRange keys,
+                                                                        int limit,
+                                                                        Reverse reverse,
+                                                                        SpanContext spanContext,
+                                                                        Optional<UID> debugID,
+                                                                        UseProvisionalProxies useProvisionalProxies,
+                                                                        Version version) {
+	Span span("NAPI:getKeyRangeLocations"_loc, spanContext);
 	if (debugID.present())
 		g_traceBatch.addEvent("TransactionDebug", debugID.get().first(), "NativeAPI.getKeyLocations.Before");
 
-	loop {
+	while (true) {
 		try {
-			wait(cx->getBackoff());
+			co_await cx->getBackoff();
 			++cx->transactionKeyServerLocationRequests;
-			choose {
-				when(wait(cx->onProxiesChanged())) {}
-				when(GetKeyServerLocationsReply _rep = wait(basicLoadBalance(
-				         cx->getCommitProxies(useProvisionalProxies),
-				         &CommitProxyInterface::getKeyServersLocations,
-				         GetKeyServerLocationsRequest(
-				             span.context, keys.begin, keys.end, limit, reverse, version, keys.arena()),
-				         TaskPriority::DefaultPromiseEndpoint))) {
-					++cx->transactionKeyServerLocationRequestsCompleted;
-					state GetKeyServerLocationsReply rep = _rep;
-					if (debugID.present())
-						g_traceBatch.addEvent(
-						    "TransactionDebug", debugID.get().first(), "NativeAPI.getKeyLocations.After");
-					ASSERT(rep.results.size());
+			GetKeyServerLocationsReply rep = co_await commitProxyLoadBalance(
+			    cx,
+			    makeReqBuilder<GetKeyServerLocationsRequest>(
+			        span.context, keys.begin, keys.end, limit, reverse, version, keys.arena()),
+			    &CommitProxyInterface::getKeyServersLocations,
+			    useProvisionalProxies,
+			    TaskPriority::DefaultPromiseEndpoint);
+			++cx->transactionKeyServerLocationRequestsCompleted;
+			if (debugID.present())
+				g_traceBatch.addEvent("TransactionDebug", debugID.get().first(), "NativeAPI.getKeyLocations.After");
+			ASSERT(rep.results.size());
 
-					state std::vector<KeyRangeLocationInfo> results;
-					state int shard = 0;
-					for (; shard < rep.results.size(); shard++) {
-						// FIXME: these shards are being inserted into the map sequentially, it would be much more CPU
-						// efficient to save the map pairs and insert them all at once.
-						results.emplace_back(
-						    (rep.results[shard].first & keys),
-						    cx->setCachedLocation(rep.results[shard].first, rep.results[shard].second));
-						wait(yield());
-					}
-					updateTssMappings(cx, rep);
-					updateTagMappings(cx, rep);
-
-					cx->updateBackoff(success());
-					return results;
-				}
+			std::vector<KeyRangeLocationInfo> results;
+			for (int shard = 0; shard < rep.results.size(); ++shard) {
+				// FIXME: these shards are being inserted into the map sequentially, it would be much more CPU
+				// efficient to save the map pairs and insert them all at once.
+				results.emplace_back((rep.results[shard].first & keys),
+				                     cx->setCachedLocation(rep.results[shard].first, rep.results[shard].second));
+				co_await yield();
 			}
+			updateTssMappings(cx, rep);
+			updateTagMappings(cx, rep);
+
+			cx->updateBackoff(success());
+			co_return results;
 		} catch (Error& e) {
 			if (e.code() == error_code_commit_proxy_memory_limit_exceeded) {
 				// Eats commit_proxy_memory_limit_exceeded error from commit proxies
@@ -1476,14 +1463,14 @@ Future<std::vector<KeyRangeLocationInfo>> getKeyRangeLocations(Reference<Transac
 	                                : latestVersion);
 }
 
-ACTOR Future<Void> warmRange_impl(Reference<TransactionState> trState, KeyRange keys) {
-	state int totalRanges = 0;
-	state int totalRequests = 0;
+Future<Void> warmRange_impl(Reference<TransactionState> trState, KeyRange keys) {
+	int totalRanges = 0;
+	int totalRequests = 0;
 
-	wait(trState->startTransaction());
+	co_await trState->startTransaction();
 
-	loop {
-		std::vector<KeyRangeLocationInfo> locations = wait(getKeyRangeLocations_internal(
+	while (true) {
+		std::vector<KeyRangeLocationInfo> locations = co_await getKeyRangeLocations_internal(
 		    trState->cx,
 		    keys,
 		    CLIENT_KNOBS->WARM_RANGE_SHARD_LIMIT,
@@ -1491,7 +1478,7 @@ ACTOR Future<Void> warmRange_impl(Reference<TransactionState> trState, KeyRange 
 		    trState->spanContext,
 		    trState->readOptions.present() ? trState->readOptions.get().debugID : Optional<UID>(),
 		    trState->useProvisionalProxies,
-		    trState->readVersion()));
+		    trState->readVersion());
 		totalRanges += CLIENT_KNOBS->WARM_RANGE_SHARD_LIMIT;
 		totalRequests++;
 		if (locations.size() == 0 || totalRanges >= trState->cx->locationCacheSize ||
@@ -1502,21 +1489,21 @@ ACTOR Future<Void> warmRange_impl(Reference<TransactionState> trState, KeyRange 
 
 		if (totalRequests % 20 == 0) {
 			// To avoid blocking the proxies from starting other transactions, occasionally get a read version.
-			state Transaction tr(trState->cx);
-			loop {
+			Transaction tr(trState->cx);
+			while (true) {
+				Error err;
 				try {
 					tr.setOption(FDBTransactionOptions::LOCK_AWARE);
 					tr.setOption(FDBTransactionOptions::CAUSAL_READ_RISKY);
-					wait(success(tr.getReadVersion()));
+					co_await tr.getReadVersion();
 					break;
 				} catch (Error& e) {
-					wait(tr.onError(e));
+					err = e;
 				}
+				co_await tr.onError(err);
 			}
 		}
 	}
-
-	return Void();
 }
 
 SpanContext generateSpanID(bool transactionTracingSample, SpanContext parentContext = SpanContext()) {
@@ -1585,36 +1572,6 @@ Future<Void> Transaction::warmRange(KeyRange keys) {
 	return warmRange_impl(trState, keys);
 }
 
-namespace {
-
-template <class Interface, class Request, bool P>
-Future<REPLY_TYPE(Request)> loadBalance(
-    DatabaseContext* ctx,
-    const Reference<LocationInfo> alternatives,
-    RequestStream<Request, P> Interface::* channel,
-    const Request& request = Request(),
-    TaskPriority taskID = TaskPriority::DefaultPromiseEndpoint,
-    AtMostOnce atMostOnce =
-        AtMostOnce::False, // if true, throws request_maybe_delivered() instead of retrying automatically
-    QueueModel* model = nullptr,
-    bool compareReplicas = false,
-    int requiredReplicas = 0) {
-	if (alternatives->hasCaches) {
-		return loadBalance(
-		    alternatives->locations(), channel, request, taskID, atMostOnce, model, compareReplicas, requiredReplicas);
-	}
-	return fmap(
-	    [ctx](auto const& res) {
-		    if (res.cached) {
-			    ctx->updateCache.trigger();
-		    }
-		    return res;
-	    },
-	    loadBalance(
-	        alternatives->locations(), channel, request, taskID, atMostOnce, model, compareReplicas, requiredReplicas));
-}
-} // namespace
-
 ACTOR Future<Optional<Value>> getValue(Reference<TransactionState> trState,
                                        Key key,
                                        TransactionRecordLogInfo recordLogInfo) {
@@ -1667,8 +1624,7 @@ ACTOR Future<Optional<Value>> getValue(Reference<TransactionState> trState,
 						throw transaction_too_old();
 					}
 					when(GetValueReply _reply = wait(
-					         loadBalance(trState->cx.getPtr(),
-					                     locationInfo.locations,
+					         loadBalance(locationInfo.locations->locations(),
 					                     &StorageServerInterface::getValue,
 					                     GetValueRequest(span.context,
 					                                     key,
@@ -1796,8 +1752,7 @@ ACTOR Future<Key> getKey(Reference<TransactionState> trState, KeySelector k) {
 						throw transaction_too_old();
 					}
 					when(GetKeyReply _reply = wait(
-					         loadBalance(trState->cx.getPtr(),
-					                     locationInfo.locations,
+					         loadBalance(locationInfo.locations->locations(),
 					                     &StorageServerInterface::getKey,
 					                     req,
 					                     TaskPriority::DefaultPromiseEndpoint,
@@ -1939,8 +1894,7 @@ ACTOR Future<Version> watchValue(Database cx, Reference<const WatchParameters> p
 			state WatchValueReply resp;
 			choose {
 				when(WatchValueReply r = wait(
-				         loadBalance(cx.getPtr(),
-				                     locationInfo.locations,
+				         loadBalance(locationInfo.locations->locations(),
 				                     &StorageServerInterface::watchValue,
 				                     WatchValueRequest(span.context,
 				                                       parameters->key,
@@ -1970,7 +1924,7 @@ ACTOR Future<Version> watchValue(Database cx, Reference<const WatchParameters> p
 			// max versions in flight in an attempt to reliably recognize when
 			// a recovery has occurred, but avoid triggering if it just takes a
 			// little while to get the committed version.
-			bool buggifyRetry = g_network->isSimulated() && !g_simulator->speedUpSimulation && BUGGIFY_WITH_PROB(0.1);
+			bool buggifyRetry = g_network->isSimulated() && !g_simulator->speedUpSimulation && buggify(0.1);
 			CODE_PROBE(buggifyRetry, "Watch buggifying version gap retry");
 			if (v - resp.version < 50'000'000 && !buggifyRetry) {
 				return resp.version;
@@ -2078,7 +2032,7 @@ Future<Void> sameVersionDiffValue(Database cx, Reference<WatchParameters> parame
 				cx->setWatchMetadata(metadata);
 
 				metadata->watchFutureSS = watchStorageServerResp(parameters->key, cx);
-				co_await success(metadata->watchPromise.getFuture());
+				co_await metadata->watchPromise.getFuture();
 			}
 
 			co_return;
@@ -2292,8 +2246,7 @@ Future<RangeResultFamily> getExactRange(Reference<TransactionState> trState,
 							throw transaction_too_old();
 						}
 						when(GetKeyValuesFamilyReply _rep = wait(loadBalance(
-						         trState->cx.getPtr(),
-						         locations[shard].locations,
+						         locations[shard].locations->locations(),
 						         getRangeRequestStream<GetKeyValuesFamilyRequest>(),
 						         req,
 						         TaskPriority::DefaultPromiseEndpoint,
@@ -2678,8 +2631,7 @@ Future<RangeResultFamily> getRange(Reference<TransactionState> trState,
 					}
 					// state AnnotateActor annotation(currentLineage);
 					GetKeyValuesFamilyReply _rep =
-					    wait(loadBalance(trState->cx.getPtr(),
-					                     beginServer.locations,
+					    wait(loadBalance(beginServer.locations->locations(),
 					                     getRangeRequestStream<GetKeyValuesFamilyRequest>(),
 					                     req,
 					                     TaskPriority::DefaultPromiseEndpoint,
@@ -2733,7 +2685,7 @@ Future<RangeResultFamily> getRange(Reference<TransactionState> trState,
 					output.readToBegin = readToBegin;
 					output.readThroughEnd = readThroughEnd;
 
-					if (BUGGIFY && limits.hasByteLimit() && output.size() > std::max(1, originalLimits.minRows) &&
+					if (buggify() && limits.hasByteLimit() && output.size() > std::max(1, originalLimits.minRows) &&
 					    (!std::is_same<GetKeyValuesFamilyRequest, GetMappedKeyValuesRequest>::value)) {
 						// Copy instead of resizing because TSS maybe be using output's arena for comparison. This only
 						// happens in simulation so it's fine
@@ -2951,7 +2903,7 @@ static Future<Void> tssStreamComparison(Request request,
 			if ((!ssEndOfStream || !tssEndOfStream) && !TSS_doCompare(ssReply.get(), tssReply.get())) {
 				CODE_PROBE(true, "TSS mismatch in stream comparison");
 				TraceEvent mismatchEvent(
-				    (g_network->isSimulated() && g_simulator->tssMode == ISimulator::TSSMode::EnabledDropMutations)
+				    (simulationPolicyHasCapability(ISimulationPolicy::Capability::WarnOnStorageMismatch))
 				        ? SevWarnAlways
 				        : SevError,
 				    LB_mismatchTraceName(request, TSS_COMPARISON));
@@ -2973,11 +2925,12 @@ static Future<Void> tssStreamComparison(Request request,
 						tssData.metrics->recordDetailedMismatchData(mismatchUID, mismatchEvent.getFields().toString());
 
 						// record a summarized trace event instead
-						TraceEvent summaryEvent((g_network->isSimulated() &&
-						                         g_simulator->tssMode == ISimulator::TSSMode::EnabledDropMutations)
-						                            ? SevWarnAlways
-						                            : SevError,
-						                        LB_mismatchTraceName(request, TSS_COMPARISON));
+						TraceEvent summaryEvent(
+						    (g_network->isSimulated() &&
+						     simulationPolicyHasCapability(ISimulationPolicy::Capability::WarnOnStorageMismatch))
+						        ? SevWarnAlways
+						        : SevError,
+						    LB_mismatchTraceName(request, TSS_COMPARISON));
 						summaryEvent.detail("TSSID", tssData.tssId).detail("MismatchId", mismatchUID);
 					}
 				} else {
@@ -3990,7 +3943,7 @@ double Transaction::getBackoff(int errCode) {
 
 TransactionOptions::TransactionOptions(Database const& cx) {
 	reset(cx);
-	if (BUGGIFY) {
+	if (buggify()) {
 		commitOnFirstProxy = true;
 	}
 }
@@ -4018,6 +3971,7 @@ void TransactionOptions::clear() {
 	rawAccess = false;
 	bypassStorageQuota = false;
 	enableReplicaConsistencyCheck = false;
+	maxGrvQueueDelayMS = Optional<int64_t>();
 	requiredReplicas = 0;
 }
 
@@ -4097,57 +4051,57 @@ Optional<KeyRangeRef> intersects(VectorRef<KeyRangeRef> lhs, VectorRef<KeyRangeR
 	return Optional<KeyRangeRef>();
 }
 
-ACTOR void checkWrites(Reference<TransactionState> trState,
-                       Future<Void> committed,
-                       Promise<Void> outCommitted,
-                       CommitTransactionRequest req) {
-	state Version version;
+Future<Void> checkWrites(Uncancellable,
+                         Reference<TransactionState> trState,
+                         Future<Void> committed,
+                         Promise<Void> outCommitted,
+                         CommitTransactionRequest req) {
+	Version version{ 0 };
 	try {
-		wait(committed);
+		co_await committed;
 		// If the commit is successful, by definition the transaction still exists for now.  Grab the version, and don't
 		// use it again.
 		version = trState->committedVersion;
 		outCommitted.send(Void());
 	} catch (Error& e) {
 		outCommitted.sendError(e);
-		return;
+		co_return;
 	}
 
-	wait(delay(deterministicRandom()->random01())); // delay between 0 and 1 seconds
+	co_await delay(deterministicRandom()->random01()); // delay between 0 and 1 seconds
 
-	state KeyRangeMap<MutationBlock> expectedValues;
+	KeyRangeMap<MutationBlock> expectedValues;
 
 	auto& mutations = req.transaction.mutations;
-	state int mCount = mutations.size(); // debugging info for traceEvent
+	const int mCount = mutations.size(); // debugging info for traceEvent
 
-	for (int idx = 0; idx < mutations.size(); idx++) {
-		if (mutations[idx].type == MutationRef::SetValue)
-			expectedValues.insert(singleKeyRange(mutations[idx].param1), MutationBlock(mutations[idx].param2));
-		else if (mutations[idx].type == MutationRef::ClearRange)
-			expectedValues.insert(KeyRangeRef(mutations[idx].param1, mutations[idx].param2), MutationBlock(true));
+	for (const auto& mutation : mutations) {
+		if (mutation.type == MutationRef::SetValue)
+			expectedValues.insert(singleKeyRange(mutation.param1), MutationBlock(mutation.param2));
+		else if (mutation.type == MutationRef::ClearRange)
+			expectedValues.insert(KeyRangeRef(mutation.param1, mutation.param2), MutationBlock(true));
 	}
 
 	try {
-		state Transaction tr(trState->cx);
+		Transaction tr(trState->cx);
 		tr.setVersion(version);
-		state int checkedRanges = 0;
-		state KeyRangeMap<MutationBlock>::Ranges ranges = expectedValues.ranges();
-		state KeyRangeMap<MutationBlock>::iterator it = ranges.begin();
-		for (; it != ranges.end(); ++it) {
-			state MutationBlock m = it->value();
+		int checkedRanges = 0;
+		auto ranges = expectedValues.ranges();
+		for (auto it = ranges.begin(); it != ranges.end(); ++it) {
+			MutationBlock m = it->value();
 			if (m.mutated) {
 				checkedRanges++;
 				if (m.cleared) {
-					RangeResult shouldBeEmpty = wait(tr.getRange(it->range(), 1));
+					RangeResult shouldBeEmpty = co_await tr.getRange(it->range(), 1);
 					if (shouldBeEmpty.size()) {
 						TraceEvent(SevError, "CheckWritesFailed")
 						    .detail("Class", "Clear")
 						    .detail("KeyBegin", it->range().begin)
 						    .detail("KeyEnd", it->range().end);
-						return;
+						co_return;
 					}
 				} else {
-					Optional<Value> val = wait(tr.get(it->range().begin));
+					Optional<Value> val = co_await tr.get(it->range().begin);
 					if (!val.present() || val.get() != m.setValue) {
 						TraceEvent evt(SevError, "CheckWritesFailed");
 						evt.detail("Class", "Set").detail("Key", it->range().begin).detail("Expected", m.setValue);
@@ -4155,7 +4109,7 @@ ACTOR void checkWrites(Reference<TransactionState> trState,
 							evt.detail("Actual", "_Value Missing_");
 						else
 							evt.detail("Actual", val.get());
-						return;
+						co_return;
 					}
 				}
 			}
@@ -4385,11 +4339,7 @@ ACTOR static Future<Void> tryCommit(Reference<TransactionState> trState, CommitT
 
 	try {
 		if (CLIENT_BUGGIFY) {
-			throw deterministicRandom()->randomChoice(std::vector<Error>{ not_committed(),
-			                                                              transaction_too_old(),
-			                                                              commit_proxy_memory_limit_exceeded(),
-			                                                              grv_proxy_memory_limit_exceeded(),
-			                                                              commit_unknown_result() });
+			throw deterministicRandom()->randomChoice(std::vector<Error>{ not_committed(), transaction_too_old() });
 		}
 
 		if (req.tagSet.present() && trState->options.priority < TransactionPriority::IMMEDIATE) {
@@ -4402,6 +4352,10 @@ ACTOR static Future<Void> tryCommit(Reference<TransactionState> trState, CommitT
 		}
 
 		req.transaction.read_snapshot = trState->readVersion();
+
+		if (CLIENT_BUGGIFY) {
+			throw commit_proxy_memory_limit_exceeded();
+		}
 
 		startTime = now();
 		state Optional<UID> commitID = Optional<UID>();
@@ -4522,7 +4476,8 @@ ACTOR static Future<Void> tryCommit(Reference<TransactionState> trState, CommitT
 			}
 		}
 	} catch (Error& e) {
-		if (e.code() == error_code_request_maybe_delivered || e.code() == error_code_commit_unknown_result) {
+		if (e.code() == error_code_request_maybe_delivered || e.code() == error_code_commit_unknown_result ||
+		    e.code() == error_code_never_reply) {
 			// We don't know if the commit happened, and it might even still be in flight.
 
 			if (!trState->options.causalWriteRisky || req.idempotencyId.valid()) {
@@ -4548,6 +4503,7 @@ ACTOR static Future<Void> tryCommit(Reference<TransactionState> trState, CommitT
 					    req.transaction.read_snapshot + CLIENT_KNOBS->MAX_WRITE_TRANSACTION_LIFE_VERSIONS,
 					    req.idempotencyId));
 					if (commitResult.present()) {
+						trState->committedVersion = commitResult.get().commitVersion;
 						Standalone<StringRef> ret = makeString(10);
 						placeVersionstamp(
 						    mutateString(ret), commitResult.get().commitVersion, commitResult.get().batchIndex);
@@ -4570,7 +4526,7 @@ ACTOR static Future<Void> tryCommit(Reference<TransactionState> trState, CommitT
 			    e.code() != error_code_grv_proxy_memory_limit_exceeded &&
 			    e.code() != error_code_batch_transaction_throttled && e.code() != error_code_tag_throttled &&
 			    e.code() != error_code_process_behind && e.code() != error_code_future_version &&
-			    e.code() != error_code_proxy_tag_throttled && e.code() != error_code_transaction_throttled_hot_shard &&
+			    e.code() != error_code_transaction_throttled_hot_shard &&
 			    e.code() != error_code_transaction_rejected_range_locked) {
 				TraceEvent(SevError, "TryCommitError").error(e);
 			}
@@ -4625,11 +4581,10 @@ Future<Void> Transaction::commitMutations() {
 		}
 
 		bool isCheckingWrites = trState->options.checkWritesEnabled && deterministicRandom()->random01() < 0.01;
-		for (int i = 0; i < extraConflictRanges.size(); i++)
-			if (extraConflictRanges[i].isReady() &&
-			    extraConflictRanges[i].get().first < extraConflictRanges[i].get().second)
+		for (const auto& extraConflictRange : extraConflictRanges)
+			if (extraConflictRange.isReady() && extraConflictRange.get().first < extraConflictRange.get().second)
 				tr.transaction.read_conflict_ranges.emplace_back(
-				    tr.arena, extraConflictRanges[i].get().first, extraConflictRanges[i].get().second);
+				    tr.arena, extraConflictRange.get().first, extraConflictRange.get().second);
 
 		if (tr.idempotencyId.valid()) {
 			// We need to be able confirm that this transaction is no longer in
@@ -4680,7 +4635,7 @@ Future<Void> Transaction::commitMutations() {
 
 		if (isCheckingWrites) {
 			Promise<Void> committed;
-			checkWrites(trState, commitResult, committed, tr);
+			checkWrites(Uncancellable(), trState, commitResult, committed, tr);
 			return committed.getFuture();
 		}
 		return commitResult;
@@ -4736,6 +4691,18 @@ Future<Void> Transaction::commit() {
 	ASSERT(!committing.isValid());
 	committing = commitAndWatch(this);
 	return committing;
+}
+
+// Returns a thread-local mt19937_64 seeded once with 32 bytes of OS entropy.
+// Used for AUTOMATIC_IDEMPOTENCY ID generation in non-simulation runs.
+static std::mt19937_64& getIdempotencyRng() {
+	static thread_local std::mt19937_64 rng = []() {
+		uint32_t seed_data[8];
+		platform::getRandomBytes(seed_data, sizeof(seed_data));
+		std::seed_seq seq(seed_data, seed_data + 8);
+		return std::mt19937_64(seq);
+	}();
+	return rng;
 }
 
 void Transaction::setOption(FDBTransactionOptions::Option option, Optional<StringRef> value) {
@@ -4855,6 +4822,11 @@ void Transaction::setOption(FDBTransactionOptions::Option option, Optional<Strin
 	case FDBTransactionOptions::MAX_RETRY_DELAY:
 		validateOptionValuePresent(value);
 		trState->options.maxBackoff = extractIntOption(value, 0, std::numeric_limits<int32_t>::max()) / 1000.0;
+		break;
+
+	case FDBTransactionOptions::MAX_GRV_QUEUE_DELAY:
+		validateOptionValuePresent(value);
+		trState->options.maxGrvQueueDelayMS = extractIntOption(value, 0, std::numeric_limits<int32_t>::max());
 		break;
 
 	case FDBTransactionOptions::SIZE_LIMIT:
@@ -4979,9 +4951,15 @@ void Transaction::setOption(FDBTransactionOptions::Option option, Optional<Strin
 	case FDBTransactionOptions::AUTOMATIC_IDEMPOTENCY:
 		validateOptionValueNotPresent(value);
 		if (!tr.idempotencyId.valid()) {
-			tr.idempotencyId = IdempotencyIdRef(
-			    tr.arena,
-			    IdempotencyIdRef(BinaryWriter::toValue(deterministicRandom()->randomUniqueID(), Unversioned())));
+			StringRef id = makeString(16, tr.arena);
+			if (g_network->isSimulated()) {
+				deterministicRandom()->randomBytes(mutateString(id), 16);
+			} else {
+				auto& rng = getIdempotencyRng();
+				uint64_t buf[2] = { rng(), rng() };
+				memcpy(mutateString(id), buf, 16);
+			}
+			tr.idempotencyId = IdempotencyIdRef(id);
 		}
 		trState->automaticIdempotency = true;
 		break;
@@ -5026,7 +5004,8 @@ ACTOR Future<GetReadVersionReply> getConsistentReadVersion(SpanContext parentSpa
                                                            TransactionPriority priority,
                                                            uint32_t flags,
                                                            TransactionTagMap<uint32_t> tags,
-                                                           Optional<UID> debugID) {
+                                                           Optional<UID> debugID,
+                                                           Optional<int64_t> maxGrvQueueDelayMS) {
 	state Span span("NAPI:getConsistentReadVersion"_loc, parentSpan);
 
 	++cx->transactionReadVersionBatches;
@@ -5040,7 +5019,8 @@ ACTOR Future<GetReadVersionReply> getConsistentReadVersion(SpanContext parentSpa
 			                                cx->ssVersionVectorCache.getMaxVersion(),
 			                                flags,
 			                                tags,
-			                                debugID);
+			                                debugID,
+			                                maxGrvQueueDelayMS);
 			state Future<Void> onProxiesChanged = cx->onProxiesChanged();
 
 			choose {
@@ -5053,8 +5033,6 @@ ACTOR Future<GetReadVersionReply> getConsistentReadVersion(SpanContext parentSpa
 				                               &GrvProxyInterface::getConsistentReadVersion,
 				                               req,
 				                               cx->taskID))) {
-					CODE_PROBE(v.proxyTagThrottledDuration > 0.0,
-					           "getConsistentReadVersion received GetReadVersionReply delayed by proxy tag throttling");
 					if (tags.size() != 0) {
 						auto& priorityThrottledTags = cx->throttledTags[priority];
 						for (auto& tag : tags) {
@@ -5089,7 +5067,8 @@ ACTOR Future<GetReadVersionReply> getConsistentReadVersion(SpanContext parentSpa
 			}
 		} catch (Error& e) {
 			if (e.code() != error_code_broken_promise && e.code() != error_code_batch_transaction_throttled &&
-			    e.code() != error_code_grv_proxy_memory_limit_exceeded && e.code() != error_code_proxy_tag_throttled)
+			    e.code() != error_code_grv_proxy_memory_limit_exceeded &&
+			    e.code() != error_code_transaction_grv_queue_rejected)
 				TraceEvent(SevError, "GetConsistentReadVersionError").error(e);
 			throw;
 		}
@@ -5099,7 +5078,8 @@ ACTOR Future<GetReadVersionReply> getConsistentReadVersion(SpanContext parentSpa
 ACTOR Future<Void> readVersionBatcher(DatabaseContext* cx,
                                       FutureStream<DatabaseContext::VersionRequest> versionStream,
                                       TransactionPriority priority,
-                                      uint32_t flags) {
+                                      uint32_t flags,
+                                      Optional<int64_t> maxGrvQueueDelayMS) {
 	state std::vector<Promise<GetReadVersionReply>> requests;
 	state PromiseStream<Future<Void>> addActor;
 	state Future<Void> collection = actorCollection(addActor.getFuture());
@@ -5174,7 +5154,8 @@ ACTOR Future<Void> readVersionBatcher(DatabaseContext* cx,
 			addActor.send(ready(timeReply(GRVReply.getFuture(), replyTimes)));
 
 			Future<Void> batch = incrementalBroadcastWithError(
-			    getConsistentReadVersion(span.context, cx, count, priority, flags, std::move(tags), std::move(debugID)),
+			    getConsistentReadVersion(
+			        span.context, cx, count, priority, flags, std::move(tags), std::move(debugID), maxGrvQueueDelayMS),
 			    std::move(requests),
 			    CLIENT_KNOBS->BROADCAST_BATCH_SIZE);
 
@@ -5195,11 +5176,13 @@ ACTOR Future<Version> extractReadVersion(Reference<TransactionState> trState,
                                          Promise<Optional<Value>> metadataVersion) {
 	state Span span(spanContext, location, trState->spanContext);
 	GetReadVersionReply rep = wait(f);
+	if (CLIENT_BUGGIFY) {
+		throw grv_proxy_memory_limit_exceeded();
+	}
 	double replyTime = now();
 	double latency = replyTime - trState->startTime;
 	trState->cx->lastProxyRequestTime = trState->startTime;
 	trState->cx->updateCachedReadVersion(trState->startTime, rep.version);
-	trState->proxyTagThrottledDuration += rep.proxyTagThrottledDuration;
 	if (rep.rkBatchThrottled) {
 		trState->cx->lastRkBatchThrottleTime = replyTime;
 	}
@@ -5406,14 +5389,18 @@ Future<Version> TransactionState::getReadVersion(uint32_t flags) {
 		}
 	}
 
-	auto& batcher = cx->versionBatcher[flags];
-	if (!batcher.actor.isValid()) {
-		batcher.actor = readVersionBatcher(cx.getPtr(), batcher.stream.getFuture(), options.priority, flags);
-	}
-
 	Location location = "NAPI:getReadVersion"_loc;
 	SpanContext derivedSpanContext = generateSpanID(cx->transactionTracingSample, spanContext);
 	Optional<UID> versionDebugID = readOptions.present() ? readOptions.get().debugID : Optional<UID>();
+
+	// Include the max GRV queue delay in the batcher key so coalesced requests
+	// share the same proxy-side admission threshold.
+	auto& batcher = cx->versionBatcher[DatabaseContext::VersionBatcherKey(flags, options.maxGrvQueueDelayMS)];
+	if (!batcher.actor.isValid()) {
+		batcher.actor = readVersionBatcher(
+		    cx.getPtr(), batcher.stream.getFuture(), options.priority, flags, options.maxGrvQueueDelayMS);
+	}
+
 	auto const req = DatabaseContext::VersionRequest(derivedSpanContext, options.tags, versionDebugID);
 	batcher.stream.send(req);
 	startTime = now();
@@ -5430,7 +5417,7 @@ Optional<Version> Transaction::getCachedReadVersion() const {
 }
 
 double Transaction::getTagThrottledDuration() const {
-	return trState->proxyTagThrottledDuration;
+	return 0.0;
 }
 
 Future<Standalone<StringRef>> Transaction::getVersionstamp() {
@@ -5581,7 +5568,7 @@ Future<Void> Transaction::onError(Error const& e) {
 	    e.code() == error_code_database_locked || e.code() == error_code_commit_proxy_memory_limit_exceeded ||
 	    e.code() == error_code_grv_proxy_memory_limit_exceeded || e.code() == error_code_process_behind ||
 	    e.code() == error_code_batch_transaction_throttled || e.code() == error_code_tag_throttled ||
-	    e.code() == error_code_proxy_tag_throttled || e.code() == error_code_transaction_throttled_hot_shard ||
+	    e.code() == error_code_transaction_throttled_hot_shard ||
 	    (e.code() == error_code_transaction_rejected_range_locked &&
 	     CLIENT_KNOBS->TRANSACTION_LOCK_REJECTION_RETRIABLE)) {
 		if (e.code() == error_code_not_committed)
@@ -5596,9 +5583,6 @@ Future<Void> Transaction::onError(Error const& e) {
 		else if (e.code() == error_code_batch_transaction_throttled || e.code() == error_code_tag_throttled ||
 		         e.code() == error_code_transaction_throttled_hot_shard) {
 			++trState->cx->transactionsThrottled;
-		} else if (e.code() == error_code_proxy_tag_throttled) {
-			++trState->cx->transactionsThrottled;
-			trState->proxyTagThrottledDuration += CLIENT_KNOBS->PROXY_MAX_TAG_THROTTLE_DURATION;
 		} else if (e.code() == error_code_transaction_rejected_range_locked) {
 			++trState->cx->transactionsLockRejected;
 		}
@@ -5862,6 +5846,8 @@ Future<std::pair<Optional<StorageMetrics>, int>> waitStorageMetrics(Database cx,
                                                                     int expectedShardCount,
                                                                     Optional<Reference<TransactionState>> trState) {
 	Span span("NAPI:WaitStorageMetrics"_loc, generateSpanID(cx->transactionTracingSample));
+	double startTime = now();
+	int retryCount = 0;
 	while (true) {
 		if (trState.present()) {
 			co_await trState.get()->startTransaction();
@@ -5908,7 +5894,21 @@ Future<std::pair<Optional<StorageMetrics>, int>> waitStorageMetrics(Database cx,
 		} catch (Error& e) {
 			err = e;
 		}
-		TraceEvent(SevDebug, "WaitStorageMetricsHandleError").error(err);
+		retryCount++;
+		// Stays at SevDebug. The previous SevDebug→SevWarn upgrade after 60s
+		// elapsed didn't actually filter for stuck shards: the SS-side
+		// waitMetrics is a long-poll with a STORAGE_METRIC_TIMEOUT of 600s,
+		// and on timeout the SS deliberately returns wrong_shard_server with
+		// WAIT_METRICS_WRONG_SHARD_CHANCE = 0.1 to force clients to refresh
+		// their location cache. So most calls that ever hit this catch are
+		// already past 60s elapsed by design, and the SevWarn was firing on
+		// normal cluster operation. DD-init stall visibility lives on the
+		// DDInit* events instead (PR #12913).
+		TraceEvent(SevDebug, "WaitStorageMetricsHandleError")
+		    .error(err)
+		    .detail("Keys", keys)
+		    .detail("Elapsed", now() - startTime)
+		    .detail("Retries", retryCount);
 		if (err.code() == error_code_wrong_shard_server || err.code() == error_code_all_alternatives_failed) {
 			cx->invalidateCache(keys);
 			co_await delay(CLIENT_KNOBS->WRONG_SHARD_SERVER_DELAY, TaskPriority::DataDistribution);
@@ -6028,10 +6028,10 @@ Future<Standalone<VectorRef<KeyRef>>> Transaction::getRangeSplitPoints(KeyRange 
 	return ::getRangeSplitPoints(trState, keys, chunkSize);
 }
 
-ACTOR Future<Version> setPerpetualStorageWiggle(Database cx, bool enable, LockAware lockAware) {
-	state ReadYourWritesTransaction tr(cx);
-	state Version version = invalidVersion;
-	loop {
+Future<Version> setPerpetualStorageWiggle(Database cx, bool enable, LockAware lockAware) {
+	ReadYourWritesTransaction tr(cx);
+	while (true) {
+		Error err;
 		try {
 			tr.setOption(FDBTransactionOptions::ACCESS_SYSTEM_KEYS);
 			if (lockAware) {
@@ -6039,42 +6039,39 @@ ACTOR Future<Version> setPerpetualStorageWiggle(Database cx, bool enable, LockAw
 			}
 
 			tr.set(perpetualStorageWiggleKey, enable ? "1"_sr : "0"_sr);
-			wait(tr.commit());
-			version = tr.getCommittedVersion();
-			break;
+			co_await tr.commit();
+			co_return tr.getCommittedVersion();
 		} catch (Error& e) {
-			wait(tr.onError(e));
+			err = e;
 		}
+		co_await tr.onError(err);
 	}
-	return version;
 }
 
-ACTOR Future<std::vector<std::pair<UID, StorageWiggleValue>>> readStorageWiggleValues(Database cx,
-                                                                                      bool primary,
-                                                                                      bool use_system_priority) {
-	state StorageWiggleData wiggleState;
-	state KeyBackedObjectMap<UID, StorageWiggleValue, decltype(IncludeVersion())> metadataMap =
-	    wiggleState.wigglingStorageServer(PrimaryRegion(primary));
+Future<std::vector<std::pair<UID, StorageWiggleValue>>> readStorageWiggleValues(Database cx,
+                                                                                bool primary,
+                                                                                bool use_system_priority) {
+	StorageWiggleData wiggleState;
+	auto metadataMap = wiggleState.wigglingStorageServer(PrimaryRegion(primary));
+	auto tr = makeReference<ReadYourWritesTransaction>(cx);
 
-	state Reference<ReadYourWritesTransaction> tr(new ReadYourWritesTransaction(cx));
-	state KeyBackedRangeResult<std::pair<UID, StorageWiggleValue>> res;
-
-	// read the wiggling pairs
-	loop {
+	while (true) {
+		Error err;
 		try {
+			KeyBackedRangeResult<std::pair<UID, StorageWiggleValue>> res;
 			tr->setOption(FDBTransactionOptions::READ_SYSTEM_KEYS);
 			tr->setOption(FDBTransactionOptions::READ_LOCK_AWARE);
 			if (use_system_priority) {
 				tr->setOption(FDBTransactionOptions::PRIORITY_SYSTEM_IMMEDIATE);
 			}
-			wait(store(res, metadataMap.getRange(tr, UID(0, 0), Optional<UID>(), CLIENT_KNOBS->TOO_MANY)));
-			wait(tr->commit());
-			break;
+			res = co_await metadataMap.getRange(tr, UID(0, 0), Optional<UID>(), CLIENT_KNOBS->TOO_MANY);
+			co_await tr->commit();
+			co_return res.results;
 		} catch (Error& e) {
-			wait(tr->onError(e));
+			err = e;
 		}
+		co_await tr->onError(err);
 	}
-	return res.results;
 }
 
 ACTOR Future<Void> splitStorageMetricsStream(PromiseStream<Key> resultStream,
@@ -6302,7 +6299,7 @@ Reference<TransactionLogInfo> Transaction::createTrLogInfoProbabilistically(cons
 		double sampleRate =
 		    cx->globalConfig->get<double>(fdbClientInfoTxnSampleRate, std::numeric_limits<double>::infinity());
 		double clientSamplingProbability = std::isinf(sampleRate) ? CLIENT_KNOBS->CSI_SAMPLING_PROBABILITY : sampleRate;
-		if (((networkOptions.logClientInfo.present() && networkOptions.logClientInfo.get()) || BUGGIFY) &&
+		if (((networkOptions.logClientInfo.present() && networkOptions.logClientInfo.get()) || buggify()) &&
 		    deterministicRandom()->random01() < clientSamplingProbability &&
 		    (!g_network->isSimulated() || !g_simulator->speedUpSimulation)) {
 			return makeReference<TransactionLogInfo>(TransactionLogInfo::DATABASE);
@@ -6562,16 +6559,16 @@ Future<std::vector<std::pair<KeyRange, CheckpointMetaData>>> getCheckpointMetaDa
 	co_return res;
 }
 
-ACTOR Future<bool> checkSafeExclusions(Database cx, std::vector<AddressExclusion> exclusions) {
+Future<bool> checkSafeExclusions(Database cx, std::vector<AddressExclusion> exclusions) {
 	TraceEvent("ExclusionSafetyCheckBegin")
 	    .detail("NumExclusion", exclusions.size())
 	    .detail("Exclusions", describe(exclusions));
-	state bool ddCheck;
+	bool ddCheck{ false };
 	try {
 		ExclusionSafetyCheckReply _ddCheck =
-		    wait(commitProxyLoadBalance(cx,
-		                                makeReqBuilder<ExclusionSafetyCheckRequest>(exclusions),
-		                                &CommitProxyInterface::exclusionSafetyCheckReq));
+		    co_await commitProxyLoadBalance(cx,
+		                                    makeReqBuilder<ExclusionSafetyCheckRequest>(exclusions),
+		                                    &CommitProxyInterface::exclusionSafetyCheckReq);
 		ddCheck = _ddCheck.safe;
 	} catch (Error& e) {
 		if (e.code() != error_code_actor_cancelled) {
@@ -6583,32 +6580,30 @@ ACTOR Future<bool> checkSafeExclusions(Database cx, std::vector<AddressExclusion
 		throw;
 	}
 	TraceEvent("ExclusionSafetyCheckCoordinators").log();
-	state ClientCoordinators coordinatorList(cx->getConnectionRecord());
-	state std::vector<Future<Optional<LeaderInfo>>> leaderServers;
+	ClientCoordinators coordinatorList(cx->getConnectionRecord());
+	std::vector<Future<Optional<LeaderInfo>>> leaderServers;
 	leaderServers.reserve(coordinatorList.clientLeaderServers.size());
-	for (int i = 0; i < coordinatorList.clientLeaderServers.size(); i++) {
-		if (coordinatorList.clientLeaderServers[i].hostname.present()) {
+	for (const auto& clientLeaderServer : coordinatorList.clientLeaderServers) {
+		if (clientLeaderServer.hostname.present()) {
 			leaderServers.push_back(retryGetReplyFromHostname(GetLeaderRequest(coordinatorList.clusterKey, UID()),
-			                                                  coordinatorList.clientLeaderServers[i].hostname.get(),
+			                                                  clientLeaderServer.hostname.get(),
 			                                                  WLTOKEN_CLIENTLEADERREG_GETLEADER,
 			                                                  TaskPriority::CoordinationReply));
 		} else {
-			leaderServers.push_back(retryBrokenPromise(coordinatorList.clientLeaderServers[i].getLeader,
+			leaderServers.push_back(retryBrokenPromise(clientLeaderServer.getLeader,
 			                                           GetLeaderRequest(coordinatorList.clusterKey, UID()),
 			                                           TaskPriority::CoordinationReply));
 		}
 	}
 	// Wait for quorum so we don't dismiss live coordinators as unreachable by acting too fast
-	choose {
-		when(wait(smartQuorum(leaderServers, leaderServers.size() / 2 + 1, 1.0))) {}
-		when(wait(delay(3.0))) {
-			TraceEvent("ExclusionSafetyCheckNoCoordinatorQuorum").log();
-			return false;
-		}
+	auto res = co_await race(smartQuorum(leaderServers, leaderServers.size() / 2 + 1, 1.0), delay(3.0));
+	if (res.index() == 1) {
+		TraceEvent("ExclusionSafetyCheckNoCoordinatorQuorum").log();
+		co_return false;
 	}
 	int attemptCoordinatorExclude = 0;
 	int coordinatorsUnavailable = 0;
-	for (int i = 0; i < leaderServers.size(); i++) {
+	for (int i = 0; i < leaderServers.size(); ++i) {
 		NetworkAddress leaderAddress =
 		    coordinatorList.clientLeaderServers[i].getLeader.getEndpoint().getPrimaryAddress();
 		if (leaderServers[i].isReady()) {
@@ -6631,7 +6626,7 @@ ACTOR Future<bool> checkSafeExclusions(Database cx, std::vector<AddressExclusion
 	    .detail("CoordinatorCheck", coordinatorCheck)
 	    .detail("DataDistributorCheck", ddCheck);
 
-	return (ddCheck && coordinatorCheck);
+	co_return ddCheck&& coordinatorCheck;
 }
 
 // returns true if we can connect to the given worker interface
@@ -6800,12 +6795,12 @@ Future<std::vector<std::pair<StorageServerInterface, ProcessClass>>> getServerLi
 	ASSERT(!serverList.get().more && serverList.get().size() < CLIENT_KNOBS->TOO_MANY);
 
 	std::map<Optional<Standalone<StringRef>>, ProcessData> id_data;
-	for (int i = 0; i < workers.get().size(); i++)
-		id_data[workers.get()[i].locality.processId()] = workers.get()[i];
+	for (const auto& worker : workers.get())
+		id_data[worker.locality.processId()] = worker;
 
 	std::vector<std::pair<StorageServerInterface, ProcessClass>> results;
-	for (int i = 0; i < serverList.get().size(); i++) {
-		auto ssi = decodeServerListValue(serverList.get()[i].value);
+	for (const auto& server : serverList.get()) {
+		auto ssi = decodeServerListValue(server.value);
 		results.emplace_back(ssi, id_data[ssi.locality.processId()].processClass);
 	}
 

@@ -160,9 +160,14 @@ Future<bool> configureCommandActor(Reference<IDatabase> db,
 				result = ConfigurationResult::BACKUP_WORKER_ENABLED_RESTRICTED;
 				break;
 			}
+			if (it->startsWith("range_backup_worker_enabled:="_sr)) {
+				result = ConfigurationResult::RANGE_BACKUP_WORKER_ENABLED_RESTRICTED;
+				break;
+			}
 		}
 
-		if (result != ConfigurationResult::BACKUP_WORKER_ENABLED_RESTRICTED) {
+		if (result != ConfigurationResult::BACKUP_WORKER_ENABLED_RESTRICTED &&
+		    result != ConfigurationResult::RANGE_BACKUP_WORKER_ENABLED_RESTRICTED) {
 			ConfigurationResult r = co_await ManagementAPI::changeConfig(
 			    db, std::vector<StringRef>(tokens.begin() + startToken, tokens.end()), conf, force);
 			result = r;
@@ -287,6 +292,12 @@ Future<bool> configureCommandActor(Reference<IDatabase> db,
 		        "backup system.\n");
 		ret = false;
 		break;
+	case ConfigurationResult::RANGE_BACKUP_WORKER_ENABLED_RESTRICTED:
+		fprintf(stderr,
+		        "ERROR: range_backup_worker_enabled configuration is restricted in fdbcli and managed "
+		        "automatically by the backup system.\n");
+		ret = false;
+		break;
 	default:
 		ASSERT(false);
 		ret = false;
@@ -317,7 +328,6 @@ void configureGenerator(const char* text,
 		                   "resolvers=",
 		                   "perpetual_storage_wiggle=",
 		                   "perpetual_storage_wiggle_locality=",
-		                   // TODO(zhewu): update fdbcli command documentation.
 		                   "perpetual_storage_wiggle_engine=",
 		                   "storage_migration_type=",
 		                   nullptr };
@@ -331,7 +341,8 @@ CommandFactory configureFactory(
         "<single|double|triple|three_data_hall|three_datacenter|ssd|memory|memory-radixtree|proxies=<PROXIES>|"
         "commit_proxies=<COMMIT_PROXIES>|grv_proxies=<GRV_PROXIES>|logs=<LOGS>|resolvers=<RESOLVERS>>*|"
         "count=<TSS_COUNT>|perpetual_storage_wiggle=<WIGGLE_SPEED>|perpetual_storage_wiggle_locality="
-        "<<LOCALITY_KEY>:<LOCALITY_VALUE>|0>|storage_migration_type={disabled|gradual|aggressive}"
+        "<<LOCALITY_KEY>:<LOCALITY_VALUE>|0>|perpetual_storage_wiggle_engine=<ENGINE>|"
+        "storage_migration_type={disabled|gradual|aggressive}"
         "|exclude=<ADDRESS...>",
         "change the database configuration",
         "The `new' option, if present, initializes a new database with the given configuration rather than changing "

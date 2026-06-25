@@ -60,7 +60,7 @@ struct SayHelloTaskFunc : TaskFuncBase {
 		Reference<TaskFuture> done = futureBucket->unpack(task->params[Task::reservedTaskParamKeyDone]);
 		co_await taskBucket->finish(tr, task);
 
-		if (BUGGIFY)
+		if (buggify())
 			co_await delay(10);
 
 		Key key = StringRef("Hello_" + deterministicRandom()->randomUniqueID().toString());
@@ -200,7 +200,7 @@ struct TaskBucketCorrectnessWorkload : TestWorkload {
 	bool chained;
 	int subtaskCount;
 
-	TaskBucketCorrectnessWorkload(WorkloadContext const& wcx) : TestWorkload(wcx) {
+	explicit TaskBucketCorrectnessWorkload(WorkloadContext const& wcx) : TestWorkload(wcx) {
 		chained = getOption(options, "chained"_sr, false);
 		subtaskCount = getOption(options, "subtaskCount"_sr, 20);
 	}

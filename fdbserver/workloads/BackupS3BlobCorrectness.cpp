@@ -146,7 +146,7 @@ struct BackupS3BlobCorrectnessWorkload : TestWorkload {
 		out.insert({ "RandomRangeLock" });
 	}
 
-	BackupS3BlobCorrectnessWorkload(WorkloadContext const& wcx) : TestWorkload(wcx) {
+	explicit BackupS3BlobCorrectnessWorkload(WorkloadContext const& wcx) : TestWorkload(wcx) {
 		locked.set(sharedRandomNumber % 2);
 		backupAfter = getOption(options, "backupAfter"_sr, 10.0);
 		double minBackupAfter = getOption(options, "minBackupAfter"_sr, backupAfter);
@@ -446,9 +446,9 @@ struct BackupS3BlobCorrectnessWorkload : TestWorkload {
 		co_await delay(startDelay);
 
 		// S3-specific: Conditional cleanup matching original BackupCorrectness behavior
-		// Only abort existing backups on first call (startDelay > 0) or randomly (BUGGIFY)
+		// Only abort existing backups on first call (startDelay > 0) or randomly (buggify())
 		// This prevents excessive cleanup on test restarts that caused timeouts
-		if (startDelay || BUGGIFY) {
+		if (startDelay || buggify()) {
 			TraceEvent("BS3BCW_DoBackupAbortBackup1", randomID)
 			    .detail("Tag", printable(tag))
 			    .detail("StartDelay", startDelay);
@@ -519,9 +519,10 @@ struct BackupS3BlobCorrectnessWorkload : TestWorkload {
 			                                   tag.toString(),
 			                                   backupRanges,
 			                                   StopWhenDone{ !stopDifferentialDelay },
-			                                   UsePartitionedLog::False,
+			                                   MutationLogType::DEFAULT,
 			                                   IncrementalBackupOnly::False,
 			                                   encryptionKeyFileName,
+			                                   encryptionKeyFileName.present() ? DEFAULT_ENCRYPTION_BLOCK_SIZE : 0,
 			                                   snapshotMode);
 		} catch (Error& e) {
 			TraceEvent("BS3BCW_DoBackupSubmitBackupException", randomID).error(e).detail("Tag", printable(tag));

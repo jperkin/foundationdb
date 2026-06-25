@@ -104,6 +104,8 @@ public:
 	double HOSTNAME_RECONNECT_INIT_INTERVAL;
 	double HOSTNAME_RECONNECT_MAX_INTERVAL;
 	bool ENABLE_COORDINATOR_DNS_CACHE;
+	double COORDINATOR_DNS_CACHE_REFRESH_INTERVAL;
+	double COORDINATOR_DNS_CACHE_TTL;
 	double CACHE_REFRESH_INTERVAL_WHEN_ALL_ALTERNATIVES_FAILED;
 
 	double DELAY_JITTER_OFFSET;
@@ -212,7 +214,6 @@ public:
 	int64_t SIM_PAGE_CACHE_64K;
 	int64_t BUGGIFY_SIM_PAGE_CACHE_4K;
 	int64_t BUGGIFY_SIM_PAGE_CACHE_64K;
-	int64_t BLOB_WORKER_PAGE_CACHE;
 	std::string CACHE_EVICTION_POLICY; // for now, "random", "lru", are supported
 	int MAX_EVICT_ATTEMPTS;
 	double PAGE_CACHE_TRUNCATE_LOOKUP_FRACTION;
@@ -224,10 +225,6 @@ public:
 	// AsyncFileEIO
 	int EIO_MAX_PARALLELISM;
 	int EIO_USE_ODIRECT;
-
-	// AsyncFileEncrypted
-	int ENCRYPTION_BLOCK_SIZE;
-	int MAX_DECRYPTED_BLOCKS;
 
 	// AsyncFileKAIO
 	int MAX_OUTSTANDING;
@@ -400,5 +397,6 @@ public:
 // Flow knobs are needed before the knob collections are available, so a global FlowKnobs object is used to bootstrap
 extern FlowKnobs bootstrapGlobalFlowKnobs;
 extern FlowKnobs const* FLOW_KNOBS;
+void resetFlowKnobs(class Randomize randomize, class IsSimulated isSimulated);
 
 #endif

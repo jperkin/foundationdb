@@ -1,5 +1,6 @@
 fdb_find_sources(FDBSERVER_SRCS)
 list(FILTER FDBSERVER_SRCS EXCLUDE REGEX "^workloads/")
+list(REMOVE_ITEM FDBSERVER_SRCS FDBServerUnitTestMain.cpp)
 include(AddFdbServerLinkTest)
 
 function(configure_fdbserver_common_includes target_name)
@@ -40,8 +41,8 @@ else()
 endif()
 
 add_subdirectory(core)
-add_subdirectory(logsystem)
 add_subdirectory(kvstore)
+add_subdirectory(logsystem)
 add_subdirectory(mocks3)
 add_subdirectory(clustercontroller)
 add_subdirectory(backupworker)
@@ -71,7 +72,6 @@ if (WITH_SWIFT)
   add_definitions(-DWITH_SWIFT)
 
   add_library(fdbserver_swift STATIC
-          sequencer/masterserver.swift
           swift_fdbserver_cxx_swift_value_conformance.swift
           swift_fdbserver_collections.swift
           swift_fdbserver_stream_support.swift
@@ -90,8 +90,6 @@ if (WITH_SWIFT)
       "${CMAKE_BINARY_DIR}/fdbclient"
       "${CMAKE_BINARY_DIR}/fdbclient/include"
       "${CMAKE_BINARY_DIR}/fdbserver/include"
-      "${CMAKE_SOURCE_DIR}/fdbserver/sequencer/include"
-      "${CMAKE_BINARY_DIR}/fdbserver/sequencer/include"
       "${CMAKE_SOURCE_DIR}/fdbrpc/include"
       "${CMAKE_BINARY_DIR}/fdbrpc/include"
       "${CMAKE_SOURCE_DIR}/contrib/md5/include"
@@ -142,7 +140,6 @@ if (WITH_SWIFT)
   add_dependencies(fdbserver_swift flow_actors)
   add_dependencies(fdbserver_swift fdbclient_swift)
   add_dependencies(fdbserver_swift fdbserver_actors)
-  add_dependencies(fdbserver_sequencer fdbserver_swift_header)
   # This does not work! (see rdar://99107402)
   # target_link_libraries(flow PRIVATE flow_swift)
   add_dependencies(fdbserver fdbserver_swift)
@@ -221,7 +218,7 @@ if(USE_JEMALLOC)
   target_link_libraries(fdbserver PRIVATE jemalloc::jemalloc)
 endif()
 
-target_link_libraries(fdbserver PRIVATE toml11_target rapidjson)
+target_link_libraries(fdbserver PRIVATE toml11::toml11 rapidjson)
 if(WITH_ROCKSDB)
   target_compile_definitions(fdbserver PRIVATE WITH_ROCKSDB)
 endif()

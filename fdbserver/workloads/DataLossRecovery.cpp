@@ -50,7 +50,7 @@ struct DataLossRecoveryWorkload : TestWorkload {
 	bool pass;
 	NetworkAddress addr;
 
-	DataLossRecoveryWorkload(WorkloadContext const& wcx)
+	explicit DataLossRecoveryWorkload(WorkloadContext const& wcx)
 	  : TestWorkload(wcx), startMoveKeysParallelismLock(5), finishMoveKeysParallelismLock(5), enabled(!clientId),
 	    pass(true) {}
 
@@ -193,7 +193,7 @@ struct DataLossRecoveryWorkload : TestWorkload {
 			std::vector<StorageServerInterface> interfs = co_await getStorageServers(cx);
 			if (!interfs.empty()) {
 				StorageServerInterface interf = interfs[deterministicRandom()->randomInt(0, interfs.size())];
-				if (!g_simulator->protectedAddresses.contains(interf.address())) {
+				if (!g_simulator->isProtectedAddress(interf.address())) {
 					// We need to avoid selecting a storage server that is already dead at this point, otherwise
 					// the test will hang. This is achieved by sending a GetStorageMetrics RPC. This is a necessary
 					// check for this test because DD has been disabled and the proper mechanism that removes bad
@@ -280,8 +280,10 @@ struct DataLossRecoveryWorkload : TestWorkload {
 				err = e;
 			}
 			TraceEvent("DataLossRecovery").error(err).detail("Phase", "MoveRangeError");
-			if (err.code() == error_code_movekeys_conflict) {
-				// Conflict on moveKeysLocks with the current running DD is expected, just retry.
+			if (err.code() == error_code_movekeys_conflict ||
+			    err.code() == error_code_finish_move_keys_too_many_retries) {
+				// Conflicts on moveKeysLocks with the current running DD and finishMoveKeys retry exhaustion are both
+				// expected transient move outcomes, so retry the move from a fresh transaction.
 				tr.reset();
 			} else {
 				co_await tr.onError(err);

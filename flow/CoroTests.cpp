@@ -20,13 +20,17 @@
 
 #include "flow/UnitTest.h"
 #include "flow/IAsyncFile.h"
+#include "flow/FlowThread.h"
+#include "flow/Trace.h"
 #include "flow/TLSConfig.h"
 
 #include <algorithm>
 #include <cstdint>
 #include <functional>
 #include <iostream>
+#include <iterator>
 #include <limits>
+#include <ranges>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -1169,8 +1173,8 @@ Future<int> Outer::Foo5::foo() {
 struct Tracker {
 	int copied;
 	bool moved;
-	Tracker(int copied = 0) : copied(copied), moved(false) {}
-	Tracker(Tracker&& other) : Tracker(other.copied) {
+	explicit Tracker(int copied = 0) : copied(copied), moved(false) {}
+	explicit(false) Tracker(Tracker&& other) : Tracker(other.copied) {
 		ASSERT(!other.moved);
 		other.moved = true;
 	}
@@ -1181,7 +1185,7 @@ struct Tracker {
 		this->copied = other.copied;
 		return *this;
 	}
-	Tracker(const Tracker& other) : Tracker(other.copied + 1) { ASSERT(!other.moved); }
+	explicit(false) Tracker(const Tracker& other) : Tracker(other.copied + 1) { ASSERT(!other.moved); }
 	Tracker& operator=(const Tracker& other) {
 		ASSERT(!other.moved);
 		this->moved = false;
@@ -1201,8 +1205,8 @@ struct LifetimeTracked {
 	inline static int liveCount = 0;
 
 	LifetimeTracked() { ++liveCount; }
-	LifetimeTracked(const LifetimeTracked&) { ++liveCount; }
-	LifetimeTracked(LifetimeTracked&&) noexcept { ++liveCount; }
+	explicit(false) LifetimeTracked(const LifetimeTracked&) { ++liveCount; }
+	explicit(false) LifetimeTracked(LifetimeTracked&&) noexcept { ++liveCount; }
 	LifetimeTracked& operator=(const LifetimeTracked&) = default;
 	LifetimeTracked& operator=(LifetimeTracked&&) noexcept = default;
 	~LifetimeTracked() { --liveCount; }
@@ -1229,6 +1233,22 @@ AsyncResult<int> delayedAsyncResultInt(Future<Void> signal, int value) {
 AsyncResult<int> failingAsyncResultInt(Future<Void> signal) {
 	co_await signal;
 	throw io_error();
+}
+
+AsyncResult<Void> noThrowOnCancelAsyncResult(Future<Void> signal, int* cleanupCount, NoThrowOnCancel = {}) {
+	struct CleanupCounter {
+		int* count;
+		~CleanupCounter() { ++*count; }
+	} cleanupCounter{ cleanupCount };
+
+	try {
+		co_await signal;
+	} catch (Error&) {
+		// NoThrowOnCancel should destroy the frame and run RAII cleanup without
+		// resuming here to throw actor_cancelled().
+		*cleanupCount += 100;
+	}
+	co_return;
 }
 
 AsyncResult<int> trackedAsyncResultInt(Future<Void> signal, int value, int* cancelledCount, int* completedCount) {
@@ -1356,6 +1376,35 @@ TEST_CASE("/flow/coro/AsyncResult/releaseDestroysState") {
 	ASSERT_EQ(LifetimeTracked::liveCount, 0);
 }
 
+TEST_CASE("/flow/coro/AsyncResult/noThrowOnCancel") {
+	Promise<Void> signal;
+	int cleanupCount = 0;
+	AsyncResult<Void> result = noThrowOnCancelAsyncResult(signal.getFuture(), &cleanupCount);
+
+	ASSERT(signal.getFutureReferenceCount() > 0);
+	result.cancel();
+	ASSERT(result.isReady() && result.isError() && result.getError().code() == error_code_actor_cancelled);
+	ASSERT_EQ(cleanupCount, 1);
+	ASSERT(signal.getFutureReferenceCount() == 0);
+	return Void();
+}
+
+TEST_CASE("/flow/coro/StrictFuture/move") {
+	Promise<int> promise;
+	Future<int> future = promise.getFuture();
+	ASSERT(future.isValid());
+	ASSERT_EQ(future.getFutureReferenceCount(), 1);
+
+	StrictFuture<int> strictFuture(std::move(future));
+	ASSERT(!future.isValid()); // NOLINT(bugprone-use-after-move): verifies moved-from Future state.
+	ASSERT_EQ(strictFuture.getFutureReferenceCount(), 1);
+
+	promise.send(42);
+	ASSERT(strictFuture.isReady());
+	ASSERT_EQ(strictFuture.get(), 42);
+	return Void();
+}
+
 TEST_CASE("/flow/coro/quorumAsyncResultReady") {
 	std::vector<AsyncResult<int>> results;
 	results.push_back(immediateAsyncResultInt(1));
@@ -1460,12 +1509,42 @@ TEST_CASE("/flow/coro/quorumAsyncResultDropCancelsProducers") {
 	co_return;
 }
 
+TEST_CASE("/flow/coro/getAllFutureAsyncSuccess") {
+	Promise<int> signal1;
+	Promise<int> signal2;
+	std::vector<Future<int>> results;
+	results.push_back(signal1.getFuture());
+	results.push_back(signal2.getFuture());
+
+	AsyncResult<std::vector<int>> all = getAllAsync(results);
+	ASSERT(!all.isReady());
+	signal2.send(11);
+	ASSERT(!all.isReady());
+	signal1.send(7);
+
+	std::vector<int> output = co_await std::move(all);
+	ASSERT_EQ(output.size(), 2);
+	ASSERT_EQ(output[0], 7);
+	ASSERT_EQ(output[1], 11);
+}
+
 TEST_CASE("/flow/coro/getAllAsyncResultReady") {
 	std::vector<AsyncResult<int>> results;
 	results.push_back(immediateAsyncResultInt(3));
 	results.push_back(immediateAsyncResultInt(5));
 
 	std::vector<int> output = co_await getAll(std::move(results));
+	ASSERT_EQ(output.size(), 2);
+	ASSERT_EQ(output[0], 3);
+	ASSERT_EQ(output[1], 5);
+}
+
+TEST_CASE("/flow/coro/getAllAsyncResultMoveReady") {
+	std::vector<AsyncResult<int>> results;
+	results.push_back(immediateAsyncResultInt(3));
+	results.push_back(immediateAsyncResultInt(5));
+
+	std::vector<int> output = co_await getAllAsync(std::move(results));
 	ASSERT_EQ(output.size(), 2);
 	ASSERT_EQ(output[0], 3);
 	ASSERT_EQ(output[1], 5);
@@ -1490,6 +1569,25 @@ TEST_CASE("/flow/coro/getAllAsyncResultSuccess") {
 	ASSERT_EQ(output[1], 11);
 }
 
+TEST_CASE("/flow/coro/getAllAsyncResultMoveSuccess") {
+	Promise<Void> signal1;
+	Promise<Void> signal2;
+	std::vector<AsyncResult<int>> results;
+	results.push_back(delayedAsyncResultInt(signal1.getFuture(), 7));
+	results.push_back(delayedAsyncResultInt(signal2.getFuture(), 11));
+
+	AsyncResult<std::vector<int>> all = getAllAsync(std::move(results));
+	ASSERT(!all.isReady());
+	signal2.send(Void());
+	ASSERT(!all.isReady());
+	signal1.send(Void());
+
+	std::vector<int> output = co_await std::move(all);
+	ASSERT_EQ(output.size(), 2);
+	ASSERT_EQ(output[0], 7);
+	ASSERT_EQ(output[1], 11);
+}
+
 TEST_CASE("/flow/coro/getAllAsyncResultError") {
 	Promise<Void> successSignal;
 	Promise<Void> errorSignal;
@@ -1502,6 +1600,25 @@ TEST_CASE("/flow/coro/getAllAsyncResultError") {
 	errorSignal.send(Void());
 	try {
 		co_await all;
+		ASSERT(false);
+	} catch (Error const& e) {
+		ASSERT_EQ(e.code(), error_code_io_error);
+	}
+	successSignal.send(Void());
+}
+
+TEST_CASE("/flow/coro/getAllAsyncResultMoveError") {
+	Promise<Void> successSignal;
+	Promise<Void> errorSignal;
+	std::vector<AsyncResult<int>> results;
+	results.push_back(delayedAsyncResultInt(successSignal.getFuture(), 13));
+	results.push_back(failingAsyncResultInt(errorSignal.getFuture()));
+
+	AsyncResult<std::vector<int>> all = getAllAsync(std::move(results));
+	ASSERT(!all.isReady());
+	errorSignal.send(Void());
+	try {
+		co_await std::move(all);
 		ASSERT(false);
 	} catch (Error const& e) {
 		ASSERT_EQ(e.code(), error_code_io_error);
@@ -1534,6 +1651,31 @@ TEST_CASE("/flow/coro/getAllAsyncResultErrorCancelsRemainingProducers") {
 	ASSERT_EQ(LifetimeTracked::liveCount, 0);
 }
 
+TEST_CASE("/flow/coro/getAllAsyncResultMoveErrorCancelsRemainingProducers") {
+	ASSERT_EQ(LifetimeTracked::liveCount, 0);
+
+	int cancelledCount = 0;
+	int completedCount = 0;
+	Promise<Void> successSignal;
+	Promise<Void> errorSignal;
+	std::vector<AsyncResult<int>> results;
+	results.push_back(trackedAsyncResultInt(successSignal.getFuture(), 17, &cancelledCount, &completedCount));
+	results.push_back(failingAsyncResultInt(errorSignal.getFuture()));
+
+	AsyncResult<std::vector<int>> all = getAllAsync(std::move(results));
+	errorSignal.send(Void());
+	try {
+		co_await std::move(all);
+		ASSERT(false);
+	} catch (Error const& e) {
+		ASSERT_EQ(e.code(), error_code_io_error);
+	}
+
+	ASSERT_EQ(completedCount, 0);
+	ASSERT_EQ(cancelledCount, 1);
+	ASSERT_EQ(LifetimeTracked::liveCount, 0);
+}
+
 TEST_CASE("/flow/coro/getAllAsyncResultDropCancelsProducers") {
 	ASSERT_EQ(LifetimeTracked::liveCount, 0);
 
@@ -1547,6 +1689,28 @@ TEST_CASE("/flow/coro/getAllAsyncResultDropCancelsProducers") {
 		}
 
 		Future<std::vector<int>> all = getAll(std::move(results));
+		ASSERT(!all.isReady());
+	}
+
+	ASSERT_EQ(completedCount, 0);
+	ASSERT_EQ(cancelledCount, 2);
+	ASSERT_EQ(LifetimeTracked::liveCount, 0);
+	co_return;
+}
+
+TEST_CASE("/flow/coro/getAllAsyncResultMoveDropCancelsProducers") {
+	ASSERT_EQ(LifetimeTracked::liveCount, 0);
+
+	int cancelledCount = 0;
+	int completedCount = 0;
+	std::vector<Promise<Void>> signals(2);
+	{
+		std::vector<AsyncResult<int>> results;
+		for (int i = 0; i < signals.size(); ++i) {
+			results.push_back(trackedAsyncResultInt(signals[i].getFuture(), i, &cancelledCount, &completedCount));
+		}
+
+		AsyncResult<std::vector<int>> all = getAllAsync(std::move(results));
 		ASSERT(!all.isReady());
 	}
 
@@ -1695,6 +1859,67 @@ struct LifetimeLogger {
 	int id;
 };
 
+enum class NoThrowOnCancelEvent { Start, LifetimeConstructed, WaitReturned, CatchBlock, AfterWait, LifetimeDestroyed };
+
+struct NoThrowOnCancelRecorder {
+	std::vector<NoThrowOnCancelEvent> events;
+
+	int count(NoThrowOnCancelEvent event) const { return std::count(events.begin(), events.end(), event); }
+
+	void record(NoThrowOnCancelEvent event) { events.push_back(event); }
+};
+
+struct NoThrowOnCancelLifetimeTracker {
+	explicit NoThrowOnCancelLifetimeTracker(NoThrowOnCancelRecorder& recorder) : recorder(recorder) {
+		recorder.record(NoThrowOnCancelEvent::LifetimeConstructed);
+	}
+	~NoThrowOnCancelLifetimeTracker() { recorder.record(NoThrowOnCancelEvent::LifetimeDestroyed); }
+
+	NoThrowOnCancelRecorder& recorder;
+};
+
+void assertNoThrowOnCancelDestroyedAtWait(NoThrowOnCancelRecorder const& recorder) {
+	const std::vector<NoThrowOnCancelEvent> expected{
+		NoThrowOnCancelEvent::Start,
+		NoThrowOnCancelEvent::LifetimeConstructed,
+		NoThrowOnCancelEvent::LifetimeDestroyed,
+	};
+	ASSERT(recorder.events == expected);
+	ASSERT_EQ(recorder.count(NoThrowOnCancelEvent::WaitReturned), 0);
+	ASSERT_EQ(recorder.count(NoThrowOnCancelEvent::CatchBlock), 0);
+	ASSERT_EQ(recorder.count(NoThrowOnCancelEvent::AfterWait), 0);
+}
+
+void assertNoThrowOnCancelCompleted(NoThrowOnCancelRecorder const& recorder) {
+	const std::vector<NoThrowOnCancelEvent> expected{
+		NoThrowOnCancelEvent::Start,     NoThrowOnCancelEvent::LifetimeConstructed, NoThrowOnCancelEvent::WaitReturned,
+		NoThrowOnCancelEvent::AfterWait, NoThrowOnCancelEvent::LifetimeDestroyed,
+	};
+	ASSERT(recorder.events == expected);
+	ASSERT_EQ(recorder.count(NoThrowOnCancelEvent::CatchBlock), 0);
+}
+
+void assertNoThrowOnCancelCaughtError(NoThrowOnCancelRecorder const& recorder) {
+	const std::vector<NoThrowOnCancelEvent> expected{
+		NoThrowOnCancelEvent::Start,     NoThrowOnCancelEvent::LifetimeConstructed, NoThrowOnCancelEvent::CatchBlock,
+		NoThrowOnCancelEvent::AfterWait, NoThrowOnCancelEvent::LifetimeDestroyed,
+	};
+	ASSERT(recorder.events == expected);
+	ASSERT_EQ(recorder.count(NoThrowOnCancelEvent::WaitReturned), 0);
+}
+
+void assertNoThrowOnCancelDestroyedAfterFirstWait(NoThrowOnCancelRecorder const& recorder) {
+	const std::vector<NoThrowOnCancelEvent> expected{
+		NoThrowOnCancelEvent::Start,
+		NoThrowOnCancelEvent::LifetimeConstructed,
+		NoThrowOnCancelEvent::WaitReturned,
+		NoThrowOnCancelEvent::LifetimeDestroyed,
+	};
+	ASSERT(recorder.events == expected);
+	ASSERT_EQ(recorder.count(NoThrowOnCancelEvent::CatchBlock), 0);
+	ASSERT_EQ(recorder.count(NoThrowOnCancelEvent::AfterWait), 0);
+}
+
 template <typename T>
 Future<Void> simple_await_test(std::stringstream& ss, Future<T> f) {
 	ss << "start. ";
@@ -1729,6 +1954,73 @@ Future<Void> actor_cancel_test(std::stringstream& ss) {
 
 	co_return;
 	ss << "after co_return. ";
+}
+
+Future<Void> noThrowOnCancelTest(NoThrowOnCancelRecorder& recorder, Future<Void> signal, NoThrowOnCancel = {}) {
+	recorder.record(NoThrowOnCancelEvent::Start);
+
+	NoThrowOnCancelLifetimeTracker tracker(recorder);
+
+	try {
+		co_await signal;
+		recorder.record(NoThrowOnCancelEvent::WaitReturned);
+	} catch (Error&) {
+		// NoThrowOnCancel should bypass coroutine catches on cancellation.
+		recorder.record(NoThrowOnCancelEvent::CatchBlock);
+	}
+
+	recorder.record(NoThrowOnCancelEvent::AfterWait);
+}
+
+Future<int> noThrowOnCancelValueTest(NoThrowOnCancelRecorder& recorder, Future<Void> signal, NoThrowOnCancel = {}) {
+	recorder.record(NoThrowOnCancelEvent::Start);
+
+	NoThrowOnCancelLifetimeTracker tracker(recorder);
+
+	co_await signal;
+	recorder.record(NoThrowOnCancelEvent::WaitReturned);
+	recorder.record(NoThrowOnCancelEvent::AfterWait);
+	co_return 42;
+}
+
+Future<Void> noThrowOnCancelSequentialAwaitsTest(NoThrowOnCancelRecorder& recorder,
+                                                 Future<Void> firstSignal,
+                                                 Future<Void> secondSignal,
+                                                 NoThrowOnCancel = {}) {
+	recorder.record(NoThrowOnCancelEvent::Start);
+
+	NoThrowOnCancelLifetimeTracker tracker(recorder);
+
+	co_await firstSignal;
+	recorder.record(NoThrowOnCancelEvent::WaitReturned);
+	co_await secondSignal;
+	recorder.record(NoThrowOnCancelEvent::AfterWait);
+}
+
+Future<int> noThrowOnCancelFutureStreamTest(NoThrowOnCancelRecorder& recorder,
+                                            FutureStream<int> stream,
+                                            NoThrowOnCancel = {}) {
+	recorder.record(NoThrowOnCancelEvent::Start);
+
+	NoThrowOnCancelLifetimeTracker tracker(recorder);
+
+	int value = co_await stream;
+	recorder.record(NoThrowOnCancelEvent::WaitReturned);
+	recorder.record(NoThrowOnCancelEvent::AfterWait);
+	co_return value;
+}
+
+Future<int> noThrowOnCancelThreadFutureStreamTest(NoThrowOnCancelRecorder& recorder,
+                                                  ThreadFutureStream<int> stream,
+                                                  NoThrowOnCancel = {}) {
+	recorder.record(NoThrowOnCancelEvent::Start);
+
+	NoThrowOnCancelLifetimeTracker tracker(recorder);
+
+	int value = co_await stream;
+	recorder.record(NoThrowOnCancelEvent::WaitReturned);
+	recorder.record(NoThrowOnCancelEvent::AfterWait);
+	co_return value;
 }
 
 Future<Void> actor_throw_test(std::stringstream& ss) {
@@ -2221,7 +2513,9 @@ TEST_CASE("/flow/coro/generators") {
 	testFibDivisible();
 	co_await testEmptyGenerator();
 	co_await testSimpleGenerator();
-	co_await testReadLines();
+	if (IAsyncFileSystem::filesystem() != nullptr) {
+		co_await testReadLines();
+	}
 	testElementWalker();
 }
 
@@ -2273,6 +2567,40 @@ TEST_CASE("/flow/coro/actor") {
 		                    "~LifetimeLogger(0). ");
 	}
 
+	TraceEvent("CoroNoThrowOnCancelTestStart");
+	{
+		NoThrowOnCancelRecorder recorder;
+		Promise<Void> signal;
+		Future<Void> f = noThrowOnCancelTest(recorder, signal.getFuture());
+		ASSERT(signal.getFutureReferenceCount() > 0);
+		f.cancel();
+		ASSERT(f.isReady() && f.isError() && f.getError().code() == error_code_actor_cancelled);
+		ASSERT(signal.getFutureReferenceCount() == 0);
+		TraceEvent("CoroNoThrowOnCancelTestResult")
+		    .detail("Scenario", "ExplicitCancel")
+		    .detail("EventCount", recorder.events.size())
+		    .detail("WaitReturnedCount", recorder.count(NoThrowOnCancelEvent::WaitReturned))
+		    .detail("CatchBlockCount", recorder.count(NoThrowOnCancelEvent::CatchBlock))
+		    .detail("AfterWaitCount", recorder.count(NoThrowOnCancelEvent::AfterWait));
+		assertNoThrowOnCancelDestroyedAtWait(recorder);
+	}
+	{
+		NoThrowOnCancelRecorder recorder;
+		Promise<Void> signal;
+		{
+			Future<Void> f = noThrowOnCancelTest(recorder, signal.getFuture());
+			ASSERT(signal.getFutureReferenceCount() > 0);
+		}
+		ASSERT(signal.getFutureReferenceCount() == 0);
+		TraceEvent("CoroNoThrowOnCancelTestResult")
+		    .detail("Scenario", "DropFuture")
+		    .detail("EventCount", recorder.events.size())
+		    .detail("WaitReturnedCount", recorder.count(NoThrowOnCancelEvent::WaitReturned))
+		    .detail("CatchBlockCount", recorder.count(NoThrowOnCancelEvent::CatchBlock))
+		    .detail("AfterWaitCount", recorder.count(NoThrowOnCancelEvent::AfterWait));
+		assertNoThrowOnCancelDestroyedAtWait(recorder);
+	}
+
 	std::cout << std::endl;
 	std::cout << "actor_throw_test\n";
 	std::cout << "================\n";
@@ -2294,6 +2622,90 @@ TEST_CASE("/flow/coro/actor") {
 	co_await testUncancellable2();
 	co_await futureStreamTest();
 	co_await stackMemoryTest();
+}
+
+TEST_CASE("/flow/coro/noThrowOnCancel/normalCompletionVoid") {
+	NoThrowOnCancelRecorder recorder;
+	Promise<Void> signal;
+	Future<Void> f = noThrowOnCancelTest(recorder, signal.getFuture());
+	ASSERT(signal.getFutureReferenceCount() > 0);
+
+	signal.send(Void());
+	ASSERT(f.isReady() && !f.isError());
+	ASSERT(signal.getFutureReferenceCount() == 0);
+	assertNoThrowOnCancelCompleted(recorder);
+	return Void();
+}
+
+TEST_CASE("/flow/coro/noThrowOnCancel/normalCompletionValue") {
+	NoThrowOnCancelRecorder recorder;
+	Promise<Void> signal;
+	Future<int> f = noThrowOnCancelValueTest(recorder, signal.getFuture());
+	ASSERT(signal.getFutureReferenceCount() > 0);
+
+	signal.send(Void());
+	ASSERT(f.isReady() && !f.isError());
+	ASSERT_EQ(f.get(), 42);
+	ASSERT(signal.getFutureReferenceCount() == 0);
+	assertNoThrowOnCancelCompleted(recorder);
+	return Void();
+}
+
+TEST_CASE("/flow/coro/noThrowOnCancel/awaitedFutureErrorRunsCatch") {
+	NoThrowOnCancelRecorder recorder;
+	Promise<Void> signal;
+	Future<Void> f = noThrowOnCancelTest(recorder, signal.getFuture());
+	ASSERT(signal.getFutureReferenceCount() > 0);
+
+	signal.sendError(io_error());
+	ASSERT(f.isReady() && !f.isError());
+	ASSERT(signal.getFutureReferenceCount() == 0);
+	assertNoThrowOnCancelCaughtError(recorder);
+	return Void();
+}
+
+TEST_CASE("/flow/coro/noThrowOnCancel/sequentialAwaitsCancelSecond") {
+	NoThrowOnCancelRecorder recorder;
+	Promise<Void> firstSignal;
+	Promise<Void> secondSignal;
+	Future<Void> f = noThrowOnCancelSequentialAwaitsTest(recorder, firstSignal.getFuture(), secondSignal.getFuture());
+	ASSERT(firstSignal.getFutureReferenceCount() > 0);
+
+	firstSignal.send(Void());
+	ASSERT(!f.isReady());
+	ASSERT(secondSignal.getFutureReferenceCount() > 0);
+
+	f.cancel();
+	ASSERT(f.isReady() && f.isError() && f.getError().code() == error_code_actor_cancelled);
+	ASSERT(secondSignal.getFutureReferenceCount() == 0);
+	assertNoThrowOnCancelDestroyedAfterFirstWait(recorder);
+	return Void();
+}
+
+TEST_CASE("/flow/coro/noThrowOnCancel/futureStreamCancel") {
+	NoThrowOnCancelRecorder recorder;
+	PromiseStream<int> stream;
+	Future<int> f = noThrowOnCancelFutureStreamTest(recorder, stream.getFuture());
+	ASSERT(stream.getFutureReferenceCount() > 0);
+
+	f.cancel();
+	ASSERT(f.isReady() && f.isError() && f.getError().code() == error_code_actor_cancelled);
+	ASSERT(stream.getFutureReferenceCount() == 0);
+	assertNoThrowOnCancelDestroyedAtWait(recorder);
+	return Void();
+}
+
+TEST_CASE("/flow/coro/noThrowOnCancel/threadFutureStreamCancel") {
+	NoThrowOnCancelRecorder recorder;
+	ThreadReturnPromiseStream<int> stream;
+	Future<int> f = noThrowOnCancelThreadFutureStreamTest(recorder, stream.getFuture());
+	ASSERT(stream.getFutureReferenceCount() > 0);
+
+	f.cancel();
+	ASSERT(f.isReady() && f.isError() && f.getError().code() == error_code_actor_cancelled);
+	ASSERT(stream.getFutureReferenceCount() == 0);
+	assertNoThrowOnCancelDestroyedAtWait(recorder);
+	return Void();
 }
 
 TEST_CASE("/flow/coro/chooseCancelWaiting") {

@@ -784,32 +784,32 @@ template <typename T>
 struct allow_anonymous_future<Optional<Standalone<T>>> : std::false_type {};
 
 template <class T>
-typename std::enable_if<allow_anonymous_future<T>::value, Future<T>>::type safeThreadFutureToFuture(
-    const ThreadFuture<T>& threadFuture) {
+    requires(allow_anonymous_future<T>::value)
+Future<T> safeThreadFutureToFuture(const ThreadFuture<T>& threadFuture) {
 	return safeThreadFutureToFutureImpl(threadFuture);
 }
 
 template <class T>
-typename std::enable_if<!allow_anonymous_future<T>::value, Future<T>>::type safeThreadFutureToFuture(
-    ThreadFuture<T>& threadFuture) {
+    requires(!allow_anonymous_future<T>::value)
+Future<T> safeThreadFutureToFuture(ThreadFuture<T>& threadFuture) {
 	Future<T> f = safeThreadFutureToFutureImpl(threadFuture);
-	if (BUGGIFY) {
+	if (buggify()) {
 		return removeArenaFromStandalone(f);
 	}
 	return f;
 }
 
 template <class T>
-typename std::enable_if<allow_anonymous_future<T>::value, Future<T>>::type safeThreadFutureToFuture(
-    const Future<T>& future) {
+    requires(allow_anonymous_future<T>::value)
+Future<T> safeThreadFutureToFuture(const Future<T>& future) {
 	// Do nothing
 	return future;
 }
 
 template <class T>
-typename std::enable_if<!allow_anonymous_future<T>::value, Future<T>>::type safeThreadFutureToFuture(
-    Future<T>& future) {
-	if (BUGGIFY) {
+    requires(!allow_anonymous_future<T>::value)
+Future<T> safeThreadFutureToFuture(Future<T>& future) {
+	if (buggify()) {
 		return removeArenaFromStandalone(future);
 	}
 	return future;

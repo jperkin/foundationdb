@@ -1,6 +1,7 @@
 fdb_find_sources(FDBCLIENT_SRCS)
 list(REMOVE_ITEM FDBCLIENT_SRCS LinkTest.cpp)
 list(REMOVE_ITEM FDBCLIENT_SRCS S3Client_cli.cpp)
+list(REMOVE_ITEM FDBCLIENT_SRCS fdbclient_test.cpp)
 list(APPEND FDBCLIENT_SRCS sha1/SHA1.cpp)
 
 message(STATUS "FDB version is ${FDB_VERSION}")
@@ -97,8 +98,7 @@ target_include_directories(fdbclient
     "${CMAKE_CURRENT_SOURCE_DIR}/include"
     "${CMAKE_CURRENT_BINARY_DIR}/include"
   PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}"
-    "${CMAKE_CURRENT_BINARY_DIR}")
+    "${CMAKE_CURRENT_SOURCE_DIR}")
 configure_file(${CMAKE_CURRENT_SOURCE_DIR}/versions.h.cmake ${CMAKE_CURRENT_BINARY_DIR}/include/fdbclient/versions.h)
 add_dependencies(fdbclient fdboptions)
 target_link_libraries(fdbclient PUBLIC fdbrpc msgpack PRIVATE rapidxml)
@@ -106,7 +106,6 @@ target_link_libraries(fdbclient PUBLIC fdbrpc msgpack PRIVATE rapidxml)
 add_flow_target(EXECUTABLE NAME s3client SRCS S3Client_cli.cpp)
 target_include_directories(s3client PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/include"
-    "${CMAKE_CURRENT_BINARY_DIR}/include"
     "${CMAKE_SOURCE_DIR}/flow/include"
     "${CMAKE_BINARY_DIR}/flow/include"
     "${CMAKE_SOURCE_DIR}/fdbrpc/include"
@@ -190,8 +189,7 @@ target_include_directories(fdbclient_sampling
     "${CMAKE_CURRENT_SOURCE_DIR}/include"
     "${CMAKE_CURRENT_BINARY_DIR}/include"
   PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}"
-    "${CMAKE_CURRENT_BINARY_DIR}")
+    "${CMAKE_CURRENT_SOURCE_DIR}")
 add_dependencies(fdbclient_sampling fdboptions)
 target_link_libraries(fdbclient_sampling PUBLIC fdbrpc_sampling msgpack PRIVATE rapidxml)
 target_compile_definitions(fdbclient_sampling PRIVATE -DENABLE_SAMPLING)
@@ -201,6 +199,10 @@ endif()
 
 add_flow_target(LINK_TEST NAME fdbclientlinktest SRCS LinkTest.cpp)
 target_link_libraries(fdbclientlinktest PRIVATE "$<LINK_LIBRARY:WHOLE_ARCHIVE,fdbclient>" rapidxml) # re-link rapidxml due to private link interface
+
+add_flow_target(EXECUTABLE NAME fdbclient_test SRCS fdbclient_test.cpp)
+set_target_properties(fdbclient_test PROPERTIES EXCLUDE_FROM_ALL TRUE)
+target_link_libraries(fdbclient_test PRIVATE "$<LINK_LIBRARY:WHOLE_ARCHIVE,fdbclient>" rapidxml)
 
 if(NOT FOUNDATIONDB_CROSS_COMPILING) # FIXME(swift): make this work when
                                      # x-compiling.
@@ -213,12 +215,15 @@ if(BUILD_AZURE_BACKUP)
 endif()
 
 if(WITH_AWS_BACKUP)
-  target_link_libraries(fdbclient PUBLIC awssdk_target)
-  target_link_libraries(fdbclient_sampling PUBLIC awssdk_target)
+  target_link_libraries(fdbclient PRIVATE awssdk_target)
+  target_link_libraries(fdbclient_sampling PRIVATE awssdk_target)
 endif()
 
 if (NOT WIN32 AND NOT OPEN_FOR_IDE)
   enable_testing()
   add_test(NAME s3client_test COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/s3client_test.sh ${CMAKE_BINARY_DIR})
+  add_test(NAME gcs_client_test COMMAND ${CMAKE_COMMAND} -E env USE_MOCK_GCS=true ${CMAKE_CURRENT_SOURCE_DIR}/tests/s3client_test.sh ${CMAKE_BINARY_DIR})
   add_test(NAME bulkload_test COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/bulkload_test.sh ${CMAKE_SOURCE_DIR} ${CMAKE_BINARY_DIR})
+  set_tests_properties(s3client_test gcs_client_test bulkload_test
+    PROPERTIES ENVIRONMENT "${SANITIZER_OPTIONS}")
 endif()

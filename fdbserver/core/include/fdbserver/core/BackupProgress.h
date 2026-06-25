@@ -21,24 +21,24 @@
 #pragma once
 
 #include <map>
+#include <set>
 #include <tuple>
 
 #include "fdbclient/FDBTypes.h"
-#include "fdbserver/core/LogSystem.h"
+#include "fdbserver/core/BackupProgressTypes.h"
 #include "flow/Arena.h"
 #include "flow/FastRef.h"
 
 class BackupProgress : NonCopyable, ReferenceCounted<BackupProgress> {
 public:
-	BackupProgress(UID id, const std::map<LogEpoch, ILogSystem::EpochTagsVersionsInfo>& infos)
-	  : dbgid(id), epochInfos(infos) {}
+	BackupProgress(UID id, const std::map<LogEpoch, EpochTagsVersionsInfo>& infos) : dbgid(id), epochInfos(infos) {}
 	~BackupProgress() {}
 
 	// Adds a backup status. If the tag already has an entry, then the max of
 	// savedVersion is used.
 	void addBackupStatus(const WorkerBackupStatus& status);
 
-	// Returns a map of tuple<Epoch, endVersion, logRouterTags> : std::map<tag, savedVersion>, so that
+	// Returns a map of tuple<Epoch, endVersion, tags> : std::map<tag, savedVersion>, so that
 	// the backup range should be [savedVersion + 1, endVersion) for the "tag" of the "Epoch".
 	//
 	// Specifically, the backup ranges for each old epoch are:
@@ -46,7 +46,8 @@ public:
 	//        backup [epochBegin, endVersion)
 	//    else if savedVersion < endVersion - 1 = knownCommittedVersion
 	//        backup [savedVersion + 1, endVersion)
-	std::map<std::tuple<LogEpoch, Version, int>, std::map<Tag, Version>> getUnfinishedBackup();
+	std::map<std::tuple<LogEpoch, Version, int>, std::map<Tag, Version>> getUnfinishedPartitionedBackup();
+	std::map<std::tuple<LogEpoch, Version, int>, std::map<Tag, Version>> getUnfinishedRangePartitionedBackup();
 
 	// Set the value for "backupStartedKey"
 	void setBackupStartedValue(Optional<Value> value) { backupStartedValue = value; }
@@ -64,10 +65,12 @@ public:
 	void delref() { ReferenceCounted<BackupProgress>::delref(); }
 
 private:
-	std::set<Tag> enumerateLogRouterTags(int logRouterTags) const {
+	std::map<std::tuple<LogEpoch, Version, int>, std::map<Tag, Version>> getUnfinishedBackup(int8_t locality);
+
+	std::set<Tag> enumerateTags(int8_t locality, int count) const {
 		std::set<Tag> tags;
-		for (int i = 0; i < logRouterTags; i++) {
-			tags.insert(Tag(tagLocalityLogRouter, i));
+		for (int i = 0; i < count; i++) {
+			tags.insert(Tag(locality, i));
 		}
 		return tags;
 	}
@@ -84,7 +87,7 @@ private:
 	const UID dbgid;
 
 	// Note this MUST be iterated in ascending order.
-	const std::map<LogEpoch, ILogSystem::EpochTagsVersionsInfo> epochInfos;
+	const std::map<LogEpoch, EpochTagsVersionsInfo> epochInfos;
 
 	// Backup progress saved in the system keyspace. Note there can be multiple
 	// progress status for a tag in an epoch due to later epoch trying to fill

@@ -65,7 +65,7 @@ inline uint32_t aggregateAcs(uint32_t startAcs, Standalone<VectorRef<std::pair<V
 // storage server tags (aka. locality >= 0)
 class AccumulativeChecksumBuilder {
 public:
-	AccumulativeChecksumBuilder(uint16_t acsIndex) : acsIndex(acsIndex), currentVersion(0) {}
+	explicit AccumulativeChecksumBuilder(uint16_t acsIndex) : acsIndex(acsIndex), currentVersion(0) {}
 
 	// Called when commit proxy applies a new tag assignment mutation
 	// At this time, this method erases the corresponding ACS value of the tag
@@ -76,7 +76,7 @@ public:
 	void addMutation(const MutationRef& mutation, Tag tag, LogEpoch epoch, UID commitProxyId, Version commitVersion);
 
 	// Return read-only ACS map
-	const std::unordered_map<Tag, AccumulativeChecksumState>& getAcsTable() { return acsTable; }
+	const std::unordered_map<Tag, AccumulativeChecksumState>& getAcsTable() const { return acsTable; }
 
 private:
 	uint16_t acsIndex; // Essentially, this is the ID of commit proxy

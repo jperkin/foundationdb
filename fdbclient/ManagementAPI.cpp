@@ -270,59 +270,40 @@ std::map<std::string, std::string> configForToken(std::string const& mode) {
 	if (mode == "single") {
 		redundancy = "1";
 		log_replicas = "1";
-		storagePolicy = tLogPolicy = Reference<IReplicationPolicy>(new PolicyOne());
+		storagePolicy = tLogPolicy = makeReference<PolicyOne>();
 
 	} else if (mode == "double" || mode == "fast_recovery_double") {
 		redundancy = "2";
 		log_replicas = "2";
-		storagePolicy = tLogPolicy = Reference<IReplicationPolicy>(
-		    new PolicyAcross(2, "zoneid", Reference<IReplicationPolicy>(new PolicyOne())));
+		storagePolicy = tLogPolicy = makeReference<PolicyAcross>(2, "zoneid", makeReference<PolicyOne>());
 	} else if (mode == "triple" || mode == "fast_recovery_triple") {
 		redundancy = "3";
 		log_replicas = "3";
-		storagePolicy = tLogPolicy = Reference<IReplicationPolicy>(
-		    new PolicyAcross(3, "zoneid", Reference<IReplicationPolicy>(new PolicyOne())));
+		storagePolicy = tLogPolicy = makeReference<PolicyAcross>(3, "zoneid", makeReference<PolicyOne>());
 	} else if (mode == "three_datacenter" || mode == "multi_dc") {
 		redundancy = "6";
 		log_replicas = "4";
-		storagePolicy = Reference<IReplicationPolicy>(
-		    new PolicyAcross(3,
-		                     "dcid",
-		                     Reference<IReplicationPolicy>(
-		                         new PolicyAcross(2, "zoneid", Reference<IReplicationPolicy>(new PolicyOne())))));
-		tLogPolicy = Reference<IReplicationPolicy>(
-		    new PolicyAcross(2,
-		                     "dcid",
-		                     Reference<IReplicationPolicy>(
-		                         new PolicyAcross(2, "zoneid", Reference<IReplicationPolicy>(new PolicyOne())))));
+		storagePolicy = makeReference<PolicyAcross>(
+		    3, "dcid", makeReference<PolicyAcross>(2, "zoneid", makeReference<PolicyOne>()));
+		tLogPolicy = makeReference<PolicyAcross>(
+		    2, "dcid", makeReference<PolicyAcross>(2, "zoneid", makeReference<PolicyOne>()));
 	} else if (mode == "three_datacenter_fallback") {
 		redundancy = "4";
 		log_replicas = "4";
-		storagePolicy = tLogPolicy = Reference<IReplicationPolicy>(
-		    new PolicyAcross(2,
-		                     "dcid",
-		                     Reference<IReplicationPolicy>(
-		                         new PolicyAcross(2, "zoneid", Reference<IReplicationPolicy>(new PolicyOne())))));
+		storagePolicy = tLogPolicy = makeReference<PolicyAcross>(
+		    2, "dcid", makeReference<PolicyAcross>(2, "zoneid", makeReference<PolicyOne>()));
 	} else if (mode == "three_data_hall") {
 		redundancy = "3";
 		log_replicas = "4";
-		storagePolicy = Reference<IReplicationPolicy>(
-		    new PolicyAcross(3, "data_hall", Reference<IReplicationPolicy>(new PolicyOne())));
-		tLogPolicy = Reference<IReplicationPolicy>(
-		    new PolicyAcross(2,
-		                     "data_hall",
-		                     Reference<IReplicationPolicy>(
-		                         new PolicyAcross(2, "zoneid", Reference<IReplicationPolicy>(new PolicyOne())))));
+		storagePolicy = makeReference<PolicyAcross>(3, "data_hall", makeReference<PolicyOne>());
+		tLogPolicy = makeReference<PolicyAcross>(
+		    2, "data_hall", makeReference<PolicyAcross>(2, "zoneid", makeReference<PolicyOne>()));
 	} else if (mode == "three_data_hall_fallback") {
 		redundancy = "2";
 		log_replicas = "4";
-		storagePolicy = Reference<IReplicationPolicy>(
-		    new PolicyAcross(2, "data_hall", Reference<IReplicationPolicy>(new PolicyOne())));
-		tLogPolicy = Reference<IReplicationPolicy>(
-		    new PolicyAcross(2,
-		                     "data_hall",
-		                     Reference<IReplicationPolicy>(
-		                         new PolicyAcross(2, "zoneid", Reference<IReplicationPolicy>(new PolicyOne())))));
+		storagePolicy = makeReference<PolicyAcross>(2, "data_hall", makeReference<PolicyOne>());
+		tLogPolicy = makeReference<PolicyAcross>(
+		    2, "data_hall", makeReference<PolicyAcross>(2, "zoneid", makeReference<PolicyOne>()));
 	} else
 		redundancySpecified = false;
 	if (redundancySpecified) {
@@ -350,25 +331,20 @@ std::map<std::string, std::string> configForToken(std::string const& mode) {
 	} else if (mode == "remote_single") {
 		remote_redundancy = "1";
 		remote_log_replicas = "1";
-		remoteTLogPolicy = Reference<IReplicationPolicy>(new PolicyOne());
+		remoteTLogPolicy = makeReference<PolicyOne>();
 	} else if (mode == "remote_double") {
 		remote_redundancy = "2";
 		remote_log_replicas = "2";
-		remoteTLogPolicy = Reference<IReplicationPolicy>(
-		    new PolicyAcross(2, "zoneid", Reference<IReplicationPolicy>(new PolicyOne())));
+		remoteTLogPolicy = makeReference<PolicyAcross>(2, "zoneid", makeReference<PolicyOne>());
 	} else if (mode == "remote_triple") {
 		remote_redundancy = "3";
 		remote_log_replicas = "3";
-		remoteTLogPolicy = Reference<IReplicationPolicy>(
-		    new PolicyAcross(3, "zoneid", Reference<IReplicationPolicy>(new PolicyOne())));
+		remoteTLogPolicy = makeReference<PolicyAcross>(3, "zoneid", makeReference<PolicyOne>());
 	} else if (mode == "remote_three_data_hall") { // FIXME: not tested in simulation
 		remote_redundancy = "3";
 		remote_log_replicas = "4";
-		remoteTLogPolicy = Reference<IReplicationPolicy>(
-		    new PolicyAcross(2,
-		                     "data_hall",
-		                     Reference<IReplicationPolicy>(
-		                         new PolicyAcross(2, "zoneid", Reference<IReplicationPolicy>(new PolicyOne())))));
+		remoteTLogPolicy = makeReference<PolicyAcross>(
+		    2, "data_hall", makeReference<PolicyAcross>(2, "zoneid", makeReference<PolicyOne>()));
 	} else
 		remoteRedundancySpecified = false;
 	if (remoteRedundancySpecified) {
@@ -388,13 +364,13 @@ ConfigurationResult buildConfiguration(std::vector<StringRef> const& modeTokens,
 	for (auto it : modeTokens) {
 		std::string mode = it.toString();
 		auto m = configForToken(mode);
-		if (!m.size()) {
+		if (m.empty()) {
 			TraceEvent(SevWarnAlways, "UnknownOption").detail("Option", mode);
 			return ConfigurationResult::UNKNOWN_OPTION;
 		}
 
 		for (auto t = m.begin(); t != m.end(); ++t) {
-			if (outConf.count(t->first)) {
+			if (outConf.contains(t->first)) {
 				TraceEvent(SevWarnAlways, "ConflictingOption")
 				    .detail("Option", t->first)
 				    .detail("Value", t->second)
@@ -405,34 +381,34 @@ ConfigurationResult buildConfiguration(std::vector<StringRef> const& modeTokens,
 		}
 	}
 	auto p = configKeysPrefix.toString();
-	if (!outConf.count(p + "storage_replication_policy") && outConf.count(p + "storage_replicas")) {
+	if (!outConf.contains(p + "storage_replication_policy") && outConf.contains(p + "storage_replicas")) {
 		int storageCount = stoi(outConf[p + "storage_replicas"]);
-		Reference<IReplicationPolicy> storagePolicy = Reference<IReplicationPolicy>(
-		    new PolicyAcross(storageCount, "zoneid", Reference<IReplicationPolicy>(new PolicyOne())));
+		Reference<IReplicationPolicy> storagePolicy =
+		    makeReference<PolicyAcross>(storageCount, "zoneid", makeReference<PolicyOne>());
 		BinaryWriter policyWriter(IncludeVersion(ProtocolVersion::withReplicationPolicy()));
 		serializeReplicationPolicy(policyWriter, storagePolicy);
 		outConf[p + "storage_replication_policy"] = policyWriter.toValue().toString();
 	}
 
-	if (!outConf.count(p + "log_replication_policy") && outConf.count(p + "log_replicas")) {
+	if (!outConf.contains(p + "log_replication_policy") && outConf.contains(p + "log_replicas")) {
 		int logCount = stoi(outConf[p + "log_replicas"]);
-		Reference<IReplicationPolicy> logPolicy = Reference<IReplicationPolicy>(
-		    new PolicyAcross(logCount, "zoneid", Reference<IReplicationPolicy>(new PolicyOne())));
+		Reference<IReplicationPolicy> logPolicy =
+		    makeReference<PolicyAcross>(logCount, "zoneid", makeReference<PolicyOne>());
 		BinaryWriter policyWriter(IncludeVersion(ProtocolVersion::withReplicationPolicy()));
 		serializeReplicationPolicy(policyWriter, logPolicy);
 		outConf[p + "log_replication_policy"] = policyWriter.toValue().toString();
 	}
-	if (outConf.count(p + "istss")) {
+	if (outConf.contains(p + "istss")) {
 		// redo config parameters to be tss config instead of normal config
 
 		// save param values from parsing as a normal config
-		bool isNew = outConf.count(p + "initialized");
+		bool isNew = outConf.contains(p + "initialized");
 		Optional<std::string> count;
 		Optional<std::string> storageEngine;
-		if (outConf.count(p + "count")) {
+		if (outConf.contains(p + "count")) {
 			count = Optional<std::string>(outConf[p + "count"]);
 		}
-		if (outConf.count(p + "storage_engine")) {
+		if (outConf.contains(p + "storage_engine")) {
 			storageEngine = Optional<std::string>(outConf[p + "storage_engine"]);
 		}
 
@@ -499,6 +475,34 @@ Future<Void> enableBackupWorker(Database cx) {
 	ConfigurationResult res = co_await ManagementAPI::changeConfig(cx.getReference(), "backup_worker_enabled:=1", true);
 	if (res != ConfigurationResult::SUCCESS) {
 		TraceEvent("BackupWorkerEnableFailed").detail("Result", res);
+		throw operation_failed();
+	}
+}
+
+Future<Void> enableRangeBackupWorker(Database cx) {
+	DatabaseConfiguration configuration = co_await getDatabaseConfiguration(cx);
+	if (configuration.rangeBackupWorkerEnabled) {
+		TraceEvent("RangeBackupWorkerAlreadyEnabled");
+		co_return;
+	}
+	ConfigurationResult res =
+	    co_await ManagementAPI::changeConfig(cx.getReference(), "range_backup_worker_enabled:=1", true);
+	if (res != ConfigurationResult::SUCCESS) {
+		TraceEvent("RangeBackupWorkerEnableFailed").detail("Result", res);
+		throw operation_failed();
+	}
+}
+
+Future<Void> disableRangeBackupWorker(Database cx) {
+	DatabaseConfiguration configuration = co_await getDatabaseConfiguration(cx);
+	if (!configuration.rangeBackupWorkerEnabled) {
+		TraceEvent("RangeBackupWorkerAlreadyDisabled");
+		co_return;
+	}
+	ConfigurationResult res =
+	    co_await ManagementAPI::changeConfig(cx.getReference(), "range_backup_worker_enabled:=0", true);
+	if (res != ConfigurationResult::SUCCESS) {
+		TraceEvent("RangeBackupWorkerDisableFailed").detail("Result", res);
 		throw operation_failed();
 	}
 }
@@ -754,7 +758,7 @@ ConfigureAutoResult parseConfig(StatusObject const& status) {
 
 	// if one process on a machine is transaction class, make them all transaction class
 	for (auto& it : count_processes) {
-		if (machinesWithTransaction.count(it.first.second) && !machinesWithStorage.count(it.first.second)) {
+		if (machinesWithTransaction.contains(it.first.second) && !machinesWithStorage.contains(it.first.second)) {
 			for (auto& proc : it.second) {
 				if (proc.second == ProcessClass::UnsetClass &&
 				    proc.second.classSource() == ProcessClass::CommandLineSource) {
@@ -773,7 +777,7 @@ ConfigureAutoResult parseConfig(StatusObject const& status) {
 		if (machinesWithTransaction.size() >= logCount && totalTransactionProcesses >= desiredTotalTransactionProcesses)
 			break;
 
-		if (!machinesWithTransaction.count(it.first.second) && !machinesWithStorage.count(it.first.second)) {
+		if (!machinesWithTransaction.contains(it.first.second) && !machinesWithStorage.contains(it.first.second)) {
 			for (auto& proc : it.second) {
 				if (proc.second == ProcessClass::UnsetClass &&
 				    proc.second.classSource() == ProcessClass::CommandLineSource) {
@@ -891,7 +895,7 @@ Future<Optional<ClusterConnectionString>> getClusterConnectionStringFromStorageS
 			// and we are breaking the promises we make with
 			// commit_unknown_result (the transaction must no longer be in
 			// progress when receiving commit_unknown_result).
-			int n = connectionStrings.size() > 0 ? connectionStrings.size() - 1 : 0; // avoid underflow
+			int n = !connectionStrings.empty() ? connectionStrings.size() - 1 : 0; // avoid underflow
 			for (int i = 0; i < n; ++i) {
 				ASSERT(currentKey.get() != connectionStrings.at(i));
 			}
@@ -976,7 +980,7 @@ Future<Optional<CoordinatorsResult>> changeQuorumChecker(Transaction* tr,
 	std::sort(old.coords.begin(), old.coords.end());
 	if (conn->hostnames == old.hostnames && conn->coords == old.coords && old.clusterKeyName() == newName) {
 		connectionStrings.clear();
-		if (BUGGIFY_WITH_PROB(0.1)) {
+		if (buggify(0.1)) {
 			// Introduce a random delay in simulation to allow processes to be
 			// killed before previousCoordinatorKeys has been reset. This helps
 			// exercise coordinator change edge cases around key cleanup.
@@ -1002,9 +1006,9 @@ Future<Optional<CoordinatorsResult>> changeQuorumChecker(Transaction* tr,
 				continue;
 			}
 
-			g_simulator->protectedAddresses.insert(process->addresses.address);
+			g_simulator->protectAddress(process->addresses.address);
 			if (addresses.secondaryAddress.present()) {
-				g_simulator->protectedAddresses.insert(process->addresses.secondaryAddress.get());
+				g_simulator->protectAddress(process->addresses.secondaryAddress.get());
 			}
 			TraceEvent("ProtectCoordinator").detail("Address", desiredCoordinators[i]).backtrace();
 			protectedCount++;
@@ -1071,7 +1075,7 @@ Future<CoordinatorsResult> changeQuorum(Database cx, Reference<IQuorumChange> ch
 
 			std::vector<NetworkAddress> oldCoordinators = co_await oldClusterConnectionString.tryResolveHostnames();
 			CoordinatorsResult result = CoordinatorsResult::SUCCESS;
-			if (!desiredCoordinators.size()) {
+			if (desiredCoordinators.empty()) {
 				std::vector<NetworkAddress> _desiredCoordinators = co_await change->getDesiredCoordinators(
 				    &tr,
 				    oldCoordinators,
@@ -1090,7 +1094,7 @@ Future<CoordinatorsResult> changeQuorum(Database cx, Reference<IQuorumChange> ch
 			}
 			if (result != CoordinatorsResult::SUCCESS)
 				co_return result;
-			if (!desiredCoordinators.size())
+			if (desiredCoordinators.empty())
 				co_return CoordinatorsResult::INVALID_NETWORK_ADDRESSES;
 			std::sort(desiredCoordinators.begin(), desiredCoordinators.end());
 
@@ -1110,9 +1114,9 @@ Future<CoordinatorsResult> changeQuorum(Database cx, Reference<IQuorumChange> ch
 					auto process = g_simulator->getProcessByAddress(desiredCoordinators[i]);
 					ASSERT(process->isReliable() || process->rebooting);
 
-					g_simulator->protectedAddresses.insert(process->addresses.address);
+					g_simulator->protectAddress(process->addresses.address);
 					if (process->addresses.secondaryAddress.present()) {
-						g_simulator->protectedAddresses.insert(process->addresses.secondaryAddress.get());
+						g_simulator->protectAddress(process->addresses.secondaryAddress.get());
 					}
 					TraceEvent("ProtectCoordinator").detail("Address", desiredCoordinators[i]).backtrace();
 				}
@@ -1173,7 +1177,7 @@ struct NameQuorumChange final : IQuorumChange {
 	std::string getDesiredClusterKeyName() const override { return newName; }
 };
 Reference<IQuorumChange> nameQuorumChange(std::string const& name, Reference<IQuorumChange> const& other) {
-	return Reference<IQuorumChange>(new NameQuorumChange(name, other));
+	return makeReference<NameQuorumChange>(name, other);
 }
 
 struct AutoQuorumChange final : IQuorumChange {
@@ -1276,7 +1280,7 @@ struct AutoQuorumChange final : IQuorumChange {
 		std::vector<ProcessData> workers = _workers;
 
 		std::map<NetworkAddress, LocalityData> addr_locality;
-		for (auto w : workers)
+		for (const auto& w : workers)
 			addr_locality[w.address] = w.locality;
 
 		// since we don't have the locality data for oldCoordinators:
@@ -1286,7 +1290,7 @@ struct AutoQuorumChange final : IQuorumChange {
 		std::set<Optional<Standalone<StringRef>>> checkDuplicates;
 		for (auto addr : oldCoordinators) {
 			auto findResult = addr_locality.find(addr);
-			if (findResult == addr_locality.end() || checkDuplicates.count(findResult->second.zoneId())) {
+			if (findResult == addr_locality.end() || checkDuplicates.contains(findResult->second.zoneId())) {
 				checkAcceptable = false;
 				break;
 			}
@@ -1412,7 +1416,7 @@ struct AutoQuorumChange final : IQuorumChange {
 	}
 };
 Reference<IQuorumChange> autoQuorumChange(int desired) {
-	return Reference<IQuorumChange>(new AutoQuorumChange(desired));
+	return makeReference<AutoQuorumChange>(desired);
 }
 
 Future<Void> excludeServers(Transaction* tr, std::vector<AddressExclusion> servers, bool failed) {
@@ -2157,8 +2161,8 @@ Future<bool> checkForExcludingServersTxActor(ReadYourWritesTransaction* tr,
                                              std::set<AddressExclusion>* exclusions,
                                              std::set<NetworkAddress>* inProgressExclusion) {
 	// TODO : replace using ExclusionInProgressRangeImpl in special key space
-	ASSERT(inProgressExclusion->size() == 0); //  Make sure every time it is cleared beforehand
-	if (!exclusions->size())
+	ASSERT(inProgressExclusion->empty()); //  Make sure every time it is cleared beforehand
+	if (exclusions->empty())
 		co_return true;
 
 	tr->setOption(FDBTransactionOptions::READ_SYSTEM_KEYS);
@@ -2272,7 +2276,7 @@ Future<Void> waitForFullReplication(Database cx) {
 				}
 			}
 
-			if (!watchFutures.size() || (config.usableRegions == 1 && watchFutures.size() < config.regions.size())) {
+			if (watchFutures.empty() || (config.usableRegions == 1 && watchFutures.size() < config.regions.size())) {
 				co_return;
 			}
 
@@ -2669,7 +2673,7 @@ Future<BulkLoadTaskState> getBulkLoadTask(Transaction* tr,
 		    .backtrace();
 		throw bulkload_task_outdated();
 	}
-	if (phases.size() > 0 && !bulkLoadTaskState.onAnyPhase(phases)) {
+	if (!phases.empty() && !bulkLoadTaskState.onAnyPhase(phases)) {
 		TraceEvent(SevWarn, "GetBulkLoadTaskError")
 		    .detail("Reason", "PhaseMismatch")
 		    .detail("Range", printable(range))
@@ -2881,6 +2885,14 @@ Future<Void> cancelBulkLoadJob(Database cx, UID jobId) {
 // TODO(Zhe): clear bulkload task metadata within the input range
 Future<Void> submitBulkLoadJob(Database cx, BulkLoadJobState jobState, bool lockAware) {
 	ASSERT(jobState.getPhase() == BulkLoadJobPhase::Submitted);
+
+	// TODO(BulkLoad): validate cluster preconditions before accepting the job.
+	// BulkLoad requires shard_encode_location_metadata=1 and enable_read_lock_on_range=1,
+	// plus a storage engine that supports SST ingestion. Without these, this function and
+	// setBulkLoadMode both succeed, but the Data Distributor never dispatches the job and
+	// any restore that triggered it stalls in "State: running, Tasks: 0/0" forever.
+	// This check must read live cluster knob state — SERVER_KNOBS in fdbclient is the
+	// caller's local defaults and tells us nothing about the cluster.
 
 	Transaction tr(cx);
 	while (true) {
@@ -3217,9 +3229,6 @@ Future<Void> cancelBulkDumpJob(Database cx, UID jobId) {
 			bulkDumpResult.clear();
 			rangeToRead = Standalone(KeyRangeRef(beginKey, endKey));
 			bulkDumpResult = co_await krmGetRanges(&tr, bulkDumpPrefix, rangeToRead);
-			if (bulkDumpResult.empty()) {
-				break;
-			}
 			for (int i = 0; i < static_cast<int>(bulkDumpResult.size()) - 1; i++) {
 				if (bulkDumpResult[i].value.empty()) {
 					continue;
@@ -4017,7 +4026,7 @@ bool schemaMatch(json_spirit::mValue const& schemaValue,
 					schemaCoverage(spath);
 				}
 
-				if (!schema.count(key)) {
+				if (!schema.contains(key)) {
 					errorStr += format("ERROR: Unknown key `%s'\n", kpath.c_str());
 					TraceEvent(sev, "SchemaMismatch").detail("Path", kpath).detail("SchemaPath", spath);
 					ok = false;
@@ -4025,7 +4034,7 @@ bool schemaMatch(json_spirit::mValue const& schemaValue,
 				}
 				auto& sv = schema.at(key);
 
-				if (sv.type() == json_spirit::obj_type && sv.get_obj().count("$enum")) {
+				if (sv.type() == json_spirit::obj_type && sv.get_obj().contains("$enum")) {
 					auto& enum_values = sv.get_obj().at("$enum").get_array();
 
 					bool any_match = false;
@@ -4050,7 +4059,7 @@ bool schemaMatch(json_spirit::mValue const& schemaValue,
 						}
 						ok = false;
 					}
-				} else if (sv.type() == json_spirit::obj_type && sv.get_obj().count("$map")) {
+				} else if (sv.type() == json_spirit::obj_type && sv.get_obj().contains("$map")) {
 					if (rv.type() != json_spirit::obj_type) {
 						errorStr += format("ERROR: Expected an object as the value for key `%s'\n", kpath.c_str());
 						TraceEvent(sev, "SchemaMismatch")
@@ -4094,9 +4103,9 @@ bool schemaMatch(json_spirit::mValue const& schemaValue,
 		} else if (resultValue.type() == json_spirit::array_type) {
 			auto& valueArray = resultValue.get_array();
 			auto& schemaArray = schemaValue.get_array();
-			if (!schemaArray.size()) {
+			if (schemaArray.empty()) {
 				// An empty schema array means that the value array is required to be empty
-				if (valueArray.size()) {
+				if (!valueArray.empty()) {
 					errorStr += format("ERROR: Expected an empty array for key `%s'\n", path.c_str());
 					TraceEvent(sev, "SchemaMismatch")
 					    .detail("Path", path)

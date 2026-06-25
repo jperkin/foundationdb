@@ -439,9 +439,7 @@ const KeyRef JSONSchemas::statusSchema = R"statusSchema(
                   "log_server_min_free_space",
                   "log_server_min_free_space_ratio",
                   "storage_server_durability_lag",
-                  "storage_server_list_fetch_failed",
-                  "blob_worker_lag",
-                  "blob_worker_missing"
+                  "storage_server_list_fetch_failed"
                ]
             },
             "description":"The database is not being saturated by the workload."
@@ -462,9 +460,7 @@ const KeyRef JSONSchemas::statusSchema = R"statusSchema(
                   "log_server_min_free_space",
                   "log_server_min_free_space_ratio",
                   "storage_server_durability_lag",
-                  "storage_server_list_fetch_failed",
-                  "blob_worker_lag",
-                  "blob_worker_missing"
+                  "storage_server_list_fetch_failed"
                ]
             },
             "description":"The database is not being saturated by the workload."
@@ -587,7 +583,6 @@ const KeyRef JSONSchemas::statusSchema = R"statusSchema(
                   "unreachable_cluster_controller_worker",
                   "unreachable_dataDistributor_worker",
                   "unreachable_ratekeeper_worker",
-                  "unreachable_blobManager_worker",
                   "unreachable_consistencyScan_worker",
                   "unreadable_configuration",
                   "full_replication_timeout",
@@ -609,8 +604,7 @@ const KeyRef JSONSchemas::statusSchema = R"statusSchema(
                   "primary_dc_missing",
                   "fetch_primary_dc_timeout",
                   "fetch_storage_wiggler_stats_timeout",
-                  "fetch_consistency_scan_status_timeout",
-                  "metacluster_metrics_missing"
+                  "fetch_consistency_scan_status_timeout"
                ]
             },
             "issues":[
@@ -875,6 +869,8 @@ const KeyRef JSONSchemas::statusSchema = R"statusSchema(
          "grv_proxies":1,
          "proxies":6,
          "backup_worker_enabled":1,
+         "range_backup_worker_enabled":1,
+         "range_backup_workers":0,
          "perpetual_storage_wiggle":0,
          "perpetual_storage_wiggle_locality":"0",
          "perpetual_storage_wiggle_engine":{
@@ -1165,7 +1161,10 @@ const KeyRef JSONSchemas::clusterConfigurationSchema = R"configSchema(
     "auto_resolvers":1,
     "auto_logs":3,
     "commit_proxies":5,
-    "grv_proxies":1
+    "grv_proxies":1,
+    "backup_worker_enabled":1,
+    "range_backup_worker_enabled":1,
+    "range_backup_workers":0
 })configSchema"_sr;
 
 const KeyRef JSONSchemas::latencyBandConfigurationSchema = R"configSchema(
@@ -1285,9 +1284,7 @@ const KeyRef JSONSchemas::faultToleranceStatusSchema = R"statusSchema(
                   "log_server_min_free_space",
                   "log_server_min_free_space_ratio",
                   "storage_server_durability_lag",
-                  "storage_server_list_fetch_failed",
-                  "blob_worker_lag",
-                  "blob_worker_missing"
+                  "storage_server_list_fetch_failed"
                ]
             },
             "description":"The database is not being saturated by the workload."
@@ -1308,9 +1305,7 @@ const KeyRef JSONSchemas::faultToleranceStatusSchema = R"statusSchema(
                   "log_server_min_free_space",
                   "log_server_min_free_space_ratio",
                   "storage_server_durability_lag",
-                  "storage_server_list_fetch_failed",
-                  "blob_worker_lag",
-                  "blob_worker_missing"
+                  "storage_server_list_fetch_failed"
                ]
             },
             "description":"The database is not being saturated by the workload."
@@ -1367,7 +1362,6 @@ const KeyRef JSONSchemas::faultToleranceStatusSchema = R"statusSchema(
                   "unreachable_cluster_controller_worker",
                   "unreachable_dataDistributor_worker",
                   "unreachable_ratekeeper_worker",
-                  "unreachable_blobManager_worker",
                   "unreachable_consistencyScan_worker",
                   "unreadable_configuration",
                   "full_replication_timeout",
@@ -1389,8 +1383,7 @@ const KeyRef JSONSchemas::faultToleranceStatusSchema = R"statusSchema(
                   "primary_dc_missing",
                   "fetch_primary_dc_timeout",
                   "fetch_storage_wiggler_stats_timeout",
-                  "fetch_consistency_scan_status_timeout",
-                  "metacluster_metrics_missing"
+                  "fetch_consistency_scan_status_timeout"
                ]
             },
             "issues":[

@@ -1,22 +1,10 @@
-set(FDBSERVER_KVSTORE_SRCS
-  DiskQueue.actor.cpp
-  FDBExecHelper.cpp
-  IKeyValueStore.cpp
-  IPager.cpp
-  KeyValueStoreCompressTestData.cpp
-  KeyValueStoreMemory.actor.cpp
-  KeyValueStoreRocksDB.actor.cpp
-  KeyValueStoreShardedRocksDB.actor.cpp
-  KeyValueStoreSQLite.actor.cpp
-  RocksDBCommon.cpp
-  RocksDBLogForwarder.cpp
-  TransactionStoreMutationTracking.cpp
-  VFSAsync.cpp
-  VersionedBTree.actor.cpp
-  VersionedBTreeDebug.cpp)
+fdb_find_sources(FDBSERVER_KVSTORE_SRCS)
 
 add_flow_target(STATIC_LIBRARY NAME fdbserver_kvstore SRCS ${FDBSERVER_KVSTORE_SRCS})
 add_fdbserver_link_test(fdbserver_kvstorelinktest
+  fdbserver_kvstore
+  fdbserver_core)
+add_fdbserver_unit_test(fdbserver_kvstore_test kvstore
   fdbserver_kvstore
   fdbserver_core)
 

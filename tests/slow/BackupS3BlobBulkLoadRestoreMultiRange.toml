@@ -20,7 +20,7 @@
 testClass = "Backup"
 
 [configuration]
-storageEngineExcludeTypes = [5] # TODO(BulkLoad): remove after allowing bulkloading with fetchKey and shardedrocksdb
+storageEngineExcludeTypes = ["ssd-sharded-rocksdb"] # TODO(BulkLoad): remove after allowing bulkloading with fetchKey and shardedrocksdb
 disableTss = true # TODO(BulkLoad): support TSS
 
 # HA (multi-region) configuration - randomly enabled for test coverage
@@ -91,7 +91,6 @@ timeout = 7200
     nodeCount = 200
     transactionsPerSecond = 150.0
     testDuration = 30.0
-    expectedRate = 0
 
     [[test.workload]]
     testName = 'BackupS3BlobCorrectness'

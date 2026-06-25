@@ -27,8 +27,6 @@
 #include "flow/flow.h"
 #include "flow/genericactors.actor.h"
 
-#include "flow/actorcompiler.h" // This must be the last #include.
-
 const KeyRef fdbClientInfoTxnSampleRate = "config/fdb_client_info/client_txn_sample_rate"_sr;
 const KeyRef fdbClientInfoTxnSizeLimit = "config/fdb_client_info/client_txn_size_limit"_sr;
 
@@ -71,7 +69,7 @@ Key GlobalConfig::prefixedKey(KeyRef key) {
 	return key.withPrefix(SpecialKeySpace::getModuleRange(SpecialKeySpace::MODULE::GLOBALCONFIG).begin);
 }
 
-const Reference<ConfigValue> GlobalConfig::get(KeyRef name) {
+Reference<ConfigValue> GlobalConfig::get(KeyRef name) {
 	auto it = data.find(name);
 	if (it == data.end()) {
 		return Reference<ConfigValue>();
@@ -79,7 +77,7 @@ const Reference<ConfigValue> GlobalConfig::get(KeyRef name) {
 	return it->second;
 }
 
-const std::map<KeyRef, Reference<ConfigValue>> GlobalConfig::get(KeyRangeRef range) {
+std::map<KeyRef, Reference<ConfigValue>> GlobalConfig::get(KeyRangeRef range) {
 	std::map<KeyRef, Reference<ConfigValue>> results;
 	for (const auto& [key, value] : data) {
 		if (range.contains(key)) {
@@ -159,7 +157,7 @@ Future<Version> GlobalConfig::refresh(Version lastKnown, Version largestSeen) {
 	erase(KeyRangeRef(""_sr, "\xff"_sr));
 
 	Backoff backoff(CLIENT_KNOBS->GLOBAL_CONFIG_REFRESH_BACKOFF, CLIENT_KNOBS->GLOBAL_CONFIG_REFRESH_MAX_BACKOFF);
-	loop {
+	while (true) {
 		Error err;
 		try {
 			GlobalConfigRefreshReply reply =
@@ -189,7 +187,7 @@ Future<Version> GlobalConfig::refresh(Version lastKnown, Version largestSeen) {
 // Applies updates to the local copy of the global configuration when this
 // process receives an updated history.
 Future<Void> GlobalConfig::updater(const ClientDBInfo* dbInfo) {
-	loop {
+	while (true) {
 		Error err;
 		try {
 			if (initialized.canBeSet()) {
@@ -202,10 +200,10 @@ Future<Void> GlobalConfig::updater(const ClientDBInfo* dbInfo) {
 				cx->delref();
 			}
 
-			loop {
+			while (true) {
 				// run one iteration at the beginning
 				co_await delay(0);
-				if (dbInfo->history.size() > 0) {
+				if (!dbInfo->history.empty()) {
 					if (lastUpdate < dbInfo->history[0].version) {
 						// This process missed too many global configuration
 						// history updates or the protocol version changed, so it
@@ -214,7 +212,7 @@ Future<Void> GlobalConfig::updater(const ClientDBInfo* dbInfo) {
 						// DBInfo could have changed after the wait. If
 						// changes are present, re-run the loop to make
 						// sure they are applied.
-						if (dbInfo->history.size() > 0 &&
+						if (!dbInfo->history.empty() &&
 						    dbInfo->history[0].version != std::numeric_limits<Version>::max()) {
 							continue;
 						}

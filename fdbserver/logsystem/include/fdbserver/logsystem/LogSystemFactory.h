@@ -22,15 +22,21 @@
 #define FDBSERVER_LOGSYSTEM_LOGSYSTEMFACTORY_H
 #pragma once
 
-#include "fdbserver/core/LogSystem.h"
+#include "fdbserver/logsystem/LogSystem.h"
 
-Reference<ILogSystem> makeLogSystemFromServerDBInfo(
+Reference<LogSystem> makeLogSystemFromServerDBInfo(
     UID const& dbgid,
     ServerDBInfo const& db,
     bool useRecoveredAt = false,
     Optional<PromiseStream<Future<Void>>> addActor = Optional<PromiseStream<Future<Void>>>());
 
-Reference<ILogSystem> makeLogSystemFromLogSystemConfig(
+Reference<LogSystemConsumer> makeLogSystemConsumerFromServerDBInfo(
+    UID const& dbgid,
+    ServerDBInfo const& db,
+    bool useRecoveredAt = false,
+    Optional<PromiseStream<Future<Void>>> addActor = Optional<PromiseStream<Future<Void>>>());
+
+Reference<LogSystem> makeLogSystemFromLogSystemConfig(
     UID const& dbgid,
     LocalityData const& locality,
     LogSystemConfig const& conf,
@@ -38,11 +44,11 @@ Reference<ILogSystem> makeLogSystemFromLogSystemConfig(
     bool useRecoveredAt = false,
     Optional<PromiseStream<Future<Void>>> addActor = Optional<PromiseStream<Future<Void>>>());
 
-Reference<ILogSystem> makeOldLogSystemFromLogSystemConfig(UID const& dbgid,
-                                                          LocalityData const& locality,
-                                                          LogSystemConfig const& conf);
+Reference<LogSystem> makeOldLogSystemFromLogSystemConfig(UID const& dbgid,
+                                                         LocalityData const& locality,
+                                                         LogSystemConfig const& conf);
 
-Future<Void> recoverAndEndLogSystemEpoch(Reference<AsyncVar<Reference<ILogSystem>>> const& outLogSystem,
+Future<Void> recoverAndEndLogSystemEpoch(Reference<AsyncVar<Reference<LogSystem>>> const& outLogSystem,
                                          UID const& dbgid,
                                          DBCoreState const& oldState,
                                          FutureStream<TLogRejoinRequest> const& rejoins,

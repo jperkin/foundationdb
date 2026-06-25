@@ -18,9 +18,6 @@
  * limitations under the License.
  */
 
-#include "flow/Platform.h"
-#include <algorithm>
-
 #ifndef BOOST_SYSTEM_NO_LIB
 #define BOOST_SYSTEM_NO_LIB
 #endif
@@ -32,12 +29,11 @@
 #endif
 #include "boost/asio.hpp"
 #include "fdbclient/CoordinationInterface.h"
-#include "flow/actorcompiler.h"
 
 IPAddress ClusterConnectionString::determineLocalSourceIP() const {
 	int size = coords.size() + hostnames.size();
 	int index = 0;
-	loop {
+	while (true) {
 		try {
 			using namespace boost::asio;
 

@@ -45,7 +45,7 @@
 #include "fdbclient/Status.h"
 #include "fdbclient/BackupContainer.h"
 #include "fdbclient/ClusterConnectionFile.h"
-#include "fdbclient/KeyBackedTypes.actor.h"
+#include "fdbclient/KeyBackedTypes.h"
 #include "fdbclient/Knobs.h"
 #include "fdbclient/RunRYWTransaction.h"
 #include "fdbclient/IBlobStore.h"
@@ -134,7 +134,7 @@ enum {
 	OPT_JSON,
 	OPT_DELETE_DATA,
 	OPT_MIN_CLEANUP_SECONDS,
-	OPT_USE_PARTITIONED_LOG,
+	OPT_MUTATION_LOG_TYPE,
 	OPT_MODE,
 
 	// Backup and Restore constants
@@ -146,6 +146,7 @@ enum {
 	OPT_BACKUPKEYS_FILTER,
 	OPT_INCREMENTALONLY,
 	OPT_ENCRYPTION_KEY_FILE,
+	OPT_ENCRYPTION_BLOCK_SIZE,
 
 	// Backup Modify
 	OPT_MOD_ACTIVE_INTERVAL,
@@ -252,9 +253,7 @@ CSimpleOpt::SOption g_rgBackupStartOptions[] = {
 	{ OPT_DESTCONTAINER, "-d", SO_REQ_SEP },
 	{ OPT_DESTCONTAINER, "--destcontainer", SO_REQ_SEP },
 	{ OPT_PROXY, "--proxy", SO_REQ_SEP },
-	// Enable "-p" option after GA
-	// { OPT_USE_PARTITIONED_LOG, "-p",                 SO_NONE },
-	{ OPT_USE_PARTITIONED_LOG, "--partitioned-log-experimental", SO_NONE },
+	{ OPT_MUTATION_LOG_TYPE, "--mutation-log-type", SO_REQ_SEP },
 	{ OPT_SNAPSHOTINTERVAL, "-s", SO_REQ_SEP },
 	{ OPT_SNAPSHOTINTERVAL, "--snapshot-interval", SO_REQ_SEP },
 	{ OPT_INITIAL_SNAPSHOT_INTERVAL, "--initial-snapshot-interval", SO_REQ_SEP },
@@ -283,6 +282,7 @@ CSimpleOpt::SOption g_rgBackupStartOptions[] = {
 	{ OPT_BLOB_CREDENTIALS, "--blob-credentials", SO_REQ_SEP },
 	{ OPT_INCREMENTALONLY, "--incremental", SO_NONE },
 	{ OPT_ENCRYPTION_KEY_FILE, "--encryption-key-file", SO_REQ_SEP },
+	{ OPT_ENCRYPTION_BLOCK_SIZE, "--encryption-block-size", SO_REQ_SEP },
 	{ OPT_MODE, "--mode", SO_REQ_SEP },
 	TLS_OPTION_FLAGS,
 	SO_END_OF_OPTIONS
@@ -665,6 +665,8 @@ CSimpleOpt::SOption g_rgBackupQueryOptions[] = {
 	{ OPT_PARENTPID, "--parentpid", SO_REQ_SEP },
 #endif
 	{ OPT_RESTORE_TIMESTAMP, "--query-restore-timestamp", SO_REQ_SEP },
+	{ OPT_CLUSTERFILE, "-C", SO_REQ_SEP },
+	{ OPT_CLUSTERFILE, "--cluster-file", SO_REQ_SEP },
 	{ OPT_DESTCONTAINER, "-d", SO_REQ_SEP },
 	{ OPT_DESTCONTAINER, "--destcontainer", SO_REQ_SEP },
 	{ OPT_PROXY, "--proxy", SO_REQ_SEP },
@@ -700,6 +702,8 @@ CSimpleOpt::SOption g_rgRestoreOptions[] = {
 #ifdef _WIN32
 	{ OPT_PARENTPID, "--parentpid", SO_REQ_SEP },
 #endif
+	{ OPT_RESTORE_CLUSTERFILE_DEST, "-C", SO_REQ_SEP },
+	{ OPT_RESTORE_CLUSTERFILE_DEST, "--cluster-file", SO_REQ_SEP },
 	{ OPT_RESTORE_CLUSTERFILE_DEST, "--dest-cluster-file", SO_REQ_SEP },
 	{ OPT_RESTORE_CLUSTERFILE_ORIG, "--orig-cluster-file", SO_REQ_SEP },
 	{ OPT_RESTORE_TIMESTAMP, "--timestamp", SO_REQ_SEP },
@@ -1078,7 +1082,9 @@ static void printBackupUsage(bool devhelp) {
 	    "                 For query operations, instead of a numeric version, use this to specify a timestamp in %s\n",
 	    BackupAgentBase::timeFormat().c_str());
 	printf(
-	    "                 and it will be converted to a version from that time using metadata in the cluster file.\n");
+	    "                 and it will be converted to a version from that time using metadata in the cluster file\n");
+	printf("                 specified with -C/--cluster-file. A cluster file is required when\n");
+	printf("                 --query-restore-timestamp is specified.\n");
 	printf("  --restorable-after-timestamp DATETIME\n"
 	       "                 For expire operations, set minimum acceptable restorability to the version equivalent of "
 	       "DATETIME and later.\n");
@@ -1097,6 +1103,10 @@ static void printBackupUsage(bool devhelp) {
 	       "                 For start or modify operations, specifies the backup's default target snapshot interval "
 	       "as DURATION seconds.  Defaults to %d for start operations.\n",
 	       CLIENT_KNOBS->BACKUP_DEFAULT_SNAPSHOT_INTERVAL_SEC);
+	printf(
+	    "  --initial-snapshot-interval DURATION\n"
+	    "                 For start operations, specifies the duration of the first inconsistent snapshot as DURATION "
+	    "seconds. Defaults to 0, meaning as fast as possible.\n");
 	printf("  --mode MODE    Snapshot mechanism to use: bulkdump, rangefile (default, legacy), or both.\n"
 	       "                 bulkdump: Uses BulkDump SST files for faster restore performance\n"
 	       "                 rangefile: Traditional range files for backward compatibility\n"
@@ -1113,7 +1123,10 @@ static void printBackupUsage(bool devhelp) {
 	       "                 If not specified, the entire database will be backed up or no filter will be applied.\n");
 	printf("  --keys-file FILE\n"
 	       "                 Same as -k option, except keys are specified in the input file.\n");
-	printf("  --partitioned-log-experimental  Starts with new type of backup system using partitioned logs.\n");
+	printf("  --mutation-log-type TYPE\n"
+	       "                 Specifies the mutation log type. Valid values are: "
+	       "partitioned-log-experimental, range-partitioned-log-experimental.\n"
+	       "If not specified, default log type is used.\n");
 	printf("  -n, --dryrun   For backup start or restore start, performs a trial run with no actual changes made.\n");
 	printf("  --log          Enables trace file logging for the CLI session.\n"
 	       "  --logdir PATH  Specifies the output directory for trace files. If\n"
@@ -1139,6 +1152,9 @@ static void printBackupUsage(bool devhelp) {
 	       "                 For modify operations, need to pass encryption key file only if Backup container URL is "
 	       "changed to "
 	       "re-encrypt all future backup files. \n");
+	printf("  --encryption-block-size"
+	       "                 Block size in bytes for file encryption. Only used with fdbbackup start command. Default "
+	       "is 1048576 (1MB).\n");
 
 	printf(TLS_HELP);
 	printf("  -w, --wait     Wait for the backup to complete (allowed with `start' and `discontinue').\n");
@@ -1177,7 +1193,7 @@ static void printRestoreUsage(bool devhelp) {
 	printf(" ACTION OPTIONS:\n");
 	// printf("  FOLDERS        Paths to folders containing the backup files.\n");
 	printf("  Options for all commands:\n\n");
-	printf("  --dest-cluster-file CONNFILE\n");
+	printf("  -C, --cluster-file, --dest-cluster-file CONNFILE\n");
 	printf("                 The cluster file to restore data into.\n");
 	printf("  -t, --tagname TAGNAME\n");
 	printf("                 The restore tag to act on.  Default is 'default'\n");
@@ -1487,6 +1503,16 @@ Optional<RestoreMode> getRestoreMode(std::string mode) {
 	if (mode == "bulkload")
 		return RestoreMode::BULKLOAD;
 	return Optional<RestoreMode>();
+}
+
+Optional<MutationLogType> getMutationLogType(std::string type) {
+	std::transform(type.begin(), type.end(), type.begin(), ::tolower);
+
+	if (type == "partitioned-log-experimental")
+		return MutationLogType::PARTITIONED_LOG;
+	if (type == "range-partitioned-log-experimental")
+		return MutationLogType::RANGE_PARTITIONED_LOG;
+	return Optional<MutationLogType>();
 }
 
 RestoreType getRestoreType(std::string name) {
@@ -2029,9 +2055,10 @@ Future<Void> submitBackup(Database db,
                           bool dryRun,
                           WaitForComplete waitForCompletion,
                           StopWhenDone stopWhenDone,
-                          UsePartitionedLog usePartitionedLog,
+                          MutationLogType mutationLogType,
                           IncrementalBackupOnly incrementalBackupOnly,
                           Optional<std::string> encryptionKeyFile,
+                          int encryptionBlockSize,
                           SnapshotMode snapshotMode = SnapshotMode::RANGEFILE) {
 	try {
 		FileBackupAgent backupAgent;
@@ -2083,9 +2110,10 @@ Future<Void> submitBackup(Database db,
 			                                  tagName,
 			                                  backupRanges,
 			                                  stopWhenDone,
-			                                  usePartitionedLog,
+			                                  mutationLogType,
 			                                  incrementalBackupOnly,
 			                                  encryptionKeyFile,
+			                                  encryptionBlockSize,
 			                                  static_cast<int>(snapshotMode));
 
 			// Wait for the backup to complete, if requested
@@ -2336,7 +2364,8 @@ Future<Void> changeDBBackupResumed(Database src, Database dest, bool pause) {
 Reference<IBackupContainer> openBackupContainer(const char* name,
                                                 const std::string& destinationContainer,
                                                 const Optional<std::string>& proxy,
-                                                const Optional<std::string>& encryptionKeyFile) {
+                                                const Optional<std::string>& encryptionKeyFile,
+                                                int encryptionBlockSize) {
 	// Error, if no dest container was specified
 	if (destinationContainer.empty()) {
 		fprintf(stderr, "ERROR: No backup destination was specified.\n");
@@ -2353,7 +2382,7 @@ Reference<IBackupContainer> openBackupContainer(const char* name,
 
 	Reference<IBackupContainer> c;
 	try {
-		c = IBackupContainer::openContainer(destinationContainer, proxy, encryptionKeyFile);
+		c = IBackupContainer::openContainer(destinationContainer, proxy, encryptionKeyFile, encryptionBlockSize);
 	} catch (Error& e) {
 		std::string msg = format("ERROR: '%s' on URL '%s'", e.what(), destinationContainer.c_str());
 		if (e.code() == error_code_backup_invalid_url && !IBackupContainer::lastOpenError.empty()) {
@@ -2420,9 +2449,10 @@ Future<Void> runRestore(Database db,
 	try {
 		FileBackupAgent backupAgent;
 
-		Reference<IBackupContainer> bc =
-		    openBackupContainer(exeRestore.toString().c_str(), container, proxy, encryptionKeyFile);
-
+		// encryptionBlockSize is passed 0 because we don't know about the block size yet and it will be read in the
+		// describeBackup call after this.
+		Reference<IBackupContainer> bc = openBackupContainer(
+		    exeRestore.toString().c_str(), container, proxy, encryptionKeyFile, /*encryptionBlockSize=*/0);
 		// If targetVersion is unset then use the maximum restorable version from the backup description
 		if (targetVersion == invalidVersion) {
 			if (verbose)
@@ -2497,7 +2527,7 @@ Future<Void> dumpBackupData(const char* name,
                             Optional<std::string> proxy,
                             Version beginVersion,
                             Version endVersion) {
-	Reference<IBackupContainer> c = openBackupContainer(name, destinationContainer, proxy, {});
+	Reference<IBackupContainer> c = openBackupContainer(name, destinationContainer, proxy, {}, 0);
 
 	if (beginVersion < 0 || endVersion < 0) {
 		BackupDescription desc = co_await c->describeBackup();
@@ -2547,7 +2577,7 @@ Future<Void> expireBackupData(const char* name,
 	}
 
 	try {
-		Reference<IBackupContainer> c = openBackupContainer(name, destinationContainer, proxy, {});
+		Reference<IBackupContainer> c = openBackupContainer(name, destinationContainer, proxy, {}, 0);
 
 		IBackupContainer::ExpireProgress progress;
 		std::string lastProgress;
@@ -2592,7 +2622,7 @@ Future<Void> expireBackupData(const char* name,
 
 Future<Void> deleteBackupContainer(const char* name, std::string destinationContainer, Optional<std::string> proxy) {
 	try {
-		Reference<IBackupContainer> c = openBackupContainer(name, destinationContainer, proxy, {});
+		Reference<IBackupContainer> c = openBackupContainer(name, destinationContainer, proxy, {}, 0);
 		int numDeleted = 0;
 		Future<Void> done = c->deleteContainer(&numDeleted);
 
@@ -2626,7 +2656,7 @@ Future<Void> describeBackup(const char* name,
                             Optional<Database> cx,
                             bool json) {
 	try {
-		Reference<IBackupContainer> c = openBackupContainer(name, destinationContainer, proxy, {});
+		Reference<IBackupContainer> c = openBackupContainer(name, destinationContainer, proxy, {}, 0);
 		BackupDescription desc = co_await c->describeBackup(deep);
 		if (cx.present())
 			co_await desc.resolveVersionTimes(cx.get());
@@ -2697,7 +2727,7 @@ Future<Void> queryBackup(const char* name,
 			reportBackupQueryError(
 			    operationId,
 			    result,
-			    format("an original cluster file must be given in order to resolve restore target timestamp '%s'",
+			    format("a cluster file must be given in order to resolve restore target timestamp '%s'",
 			           restoreTimestamp.c_str()));
 			co_return;
 		}
@@ -2722,7 +2752,7 @@ Future<Void> queryBackup(const char* name,
 	JsonBuilderArray rangeFilesJson;
 	JsonBuilderArray logFilesJson;
 	try {
-		Reference<IBackupContainer> bc = openBackupContainer(name, destinationContainer, proxy, {});
+		Reference<IBackupContainer> bc = openBackupContainer(name, destinationContainer, proxy, {}, 0);
 		BackupDescription desc = co_await bc->describeBackup();
 		// Use continuous log end version for the maximum restorable version for the key ranges when a restorable
 		// version doesn't exist.
@@ -2975,8 +3005,11 @@ Future<Void> modifyBackup(Database db, std::string tagName, BackupModifyOptions 
 				    .detail("DestURL", options.destURL.get())
 				    .detail("EncryptionKeyFile",
 				            options.encryptionKeyFile.present() ? options.encryptionKeyFile.get() : "None");
-				bc = openBackupContainer(
-				    exeBackup.toString().c_str(), options.destURL.get(), options.proxy, options.encryptionKeyFile);
+				bc = openBackupContainer(exeBackup.toString().c_str(),
+				                         options.destURL.get(),
+				                         options.proxy,
+				                         options.encryptionKeyFile,
+				                         prevContainer->getEncryptionBlockSize());
 				try {
 					co_await timeoutError(bc->create(), 30);
 				} catch (Error& e) {
@@ -2988,9 +3021,8 @@ Future<Void> modifyBackup(Database db, std::string tagName, BackupModifyOptions 
 					        e.what());
 					throw backup_error();
 				}
-
 				config.backupContainer().set(tr, bc);
-				co_await bc->writeEncryptionMetadata();
+				co_await bc->writeEncryptionMetadata(bc->getEncryptionBlockSize());
 			} else if (options.encryptionKeyFile.present()) {
 				fprintf(stdout,
 				        " Encryption key file specified without a new destination URL."
@@ -3564,7 +3596,7 @@ int main(int argc, char* argv[]) {
 		std::string restoreTimestamp;
 		WaitForComplete waitForDone{ false };
 		StopWhenDone stopWhenDone{ true };
-		UsePartitionedLog usePartitionedLog{ false }; // Set to true to use new backup system
+		MutationLogType mutationLogType{ MutationLogType::DEFAULT };
 		IncrementalBackupOnly incrementalBackupOnly{ false };
 		OnlyApplyMutationLogs onlyApplyMutationLogs{ false };
 		InconsistentSnapshotOnly inconsistentSnapshotOnly{ false };
@@ -3595,6 +3627,7 @@ int main(int argc, char* argv[]) {
 		bool jsonOutput = false;
 		DeleteData deleteData{ false };
 		Optional<std::string> encryptionKeyFile;
+		int encryptionBlockSize = 0;
 		Optional<std::string> blobManifestUrl;
 		SnapshotMode snapshotMode = SnapshotMode::RANGEFILE; // Default to legacy rangefile mode
 
@@ -3847,9 +3880,18 @@ int main(int argc, char* argv[]) {
 			case OPT_NOSTOPWHENDONE:
 				stopWhenDone.set(false);
 				break;
-			case OPT_USE_PARTITIONED_LOG:
-				usePartitionedLog.set(true);
+			case OPT_MUTATION_LOG_TYPE: {
+				auto parsedType = getMutationLogType(args->OptionArg());
+				if (!parsedType.present()) {
+					fprintf(stderr,
+					        "ERROR: Unknown mutation log type '%s'. Valid modes are: partitioned-log-experimental, "
+					        "range-partitioned-log-experimental\n",
+					        args->OptionArg());
+					return FDB_EXIT_ERROR;
+				}
+				mutationLogType = parsedType.get();
 				break;
+			}
 			case OPT_INCREMENTALONLY:
 				incrementalBackupOnly.set(true);
 				onlyApplyMutationLogs.set(true);
@@ -3857,6 +3899,20 @@ int main(int argc, char* argv[]) {
 			case OPT_ENCRYPTION_KEY_FILE:
 				encryptionKeyFile = args->OptionArg();
 				modifyOptions.encryptionKeyFile = encryptionKeyFile;
+				break;
+			case OPT_ENCRYPTION_BLOCK_SIZE:
+				try {
+					encryptionBlockSize = std::stoi(args->OptionArg());
+				} catch (std::exception&) {
+					fprintf(stderr, "ERROR: Invalid encryption block size `%s'\n", args->OptionArg());
+					printHelpTeaser(newArgV[0]);
+					return FDB_EXIT_ERROR;
+				}
+				if (encryptionBlockSize <= 0) {
+					fprintf(stderr, "ERROR: Invalid encryption block size `%s'\n", args->OptionArg());
+					printHelpTeaser(newArgV[0]);
+					return FDB_EXIT_ERROR;
+				}
 				break;
 			case OPT_RESTORECONTAINER:
 				restoreContainer = args->OptionArg();
@@ -4228,6 +4284,15 @@ int main(int argc, char* argv[]) {
 			return result.present();
 		};
 
+		if (encryptionKeyFile.present() && encryptionBlockSize == 0) {
+			encryptionBlockSize = DEFAULT_ENCRYPTION_BLOCK_SIZE;
+		}
+
+		if (encryptionBlockSize > 0 && !encryptionKeyFile.present()) {
+			fprintf(stderr, "ERROR: --encryption-block-size option requires --encryption-key-file to be set\n");
+			return FDB_EXIT_ERROR;
+		}
+
 		if (!restoreSystemKeys && !restoreUserKeys && backupKeys.empty()) {
 			addDefaultBackupRanges(backupKeys);
 		}
@@ -4260,7 +4325,7 @@ int main(int argc, char* argv[]) {
 					return FDB_EXIT_ERROR;
 				// Test out the backup url to make sure it parses.  Doesn't test to make sure it's actually
 				// writeable.
-				openBackupContainer(newArgV[0], destinationContainer, proxy, encryptionKeyFile);
+				openBackupContainer(newArgV[0], destinationContainer, proxy, encryptionKeyFile, encryptionBlockSize);
 				f = stopAfter(submitBackup(db,
 				                           destinationContainer,
 				                           proxy,
@@ -4271,9 +4336,10 @@ int main(int argc, char* argv[]) {
 				                           dryRun,
 				                           waitForDone,
 				                           stopWhenDone,
-				                           usePartitionedLog,
+				                           mutationLogType,
 				                           incrementalBackupOnly,
 				                           encryptionKeyFile,
+				                           encryptionBlockSize,
 				                           snapshotMode));
 				break;
 			}
@@ -4386,7 +4452,7 @@ int main(int argc, char* argv[]) {
 				                          backupKeysFilter,
 				                          restoreVersion,
 				                          snapshotVersion,
-				                          restoreClusterFileOrig,
+				                          clusterFile,
 				                          restoreTimestamp,
 				                          Verbose{ !quietDisplay },
 				                          db));
@@ -4615,7 +4681,9 @@ int main() {
 	                            const std::vector<std::string>& expectedOptions = {},
 	                            bool shouldSucceed = true,
 	                            const char* testName = "",
-	                            bool expectCSimpleOptions = false) -> bool {
+	                            bool expectCSimpleOptions = false,
+	                            const CSimpleOpt::SOption* simpleOptions = g_rgOptions,
+	                            int simpleOptionsArgOffset = 0) -> bool {
 		printf("\n--- Test: %s ---\n", testName);
 		static std::vector<std::string> persistentArgs;
 		persistentArgs.clear();
@@ -4679,8 +4747,11 @@ int main() {
 		// Test with actual CSimpleOpt if expected
 		if (expectCSimpleOptions && !expectedOptions.empty()) {
 			try {
-				std::unique_ptr<CSimpleOpt> simpleOpt = std::make_unique<CSimpleOpt>(
-				    argcNew, const_cast<char**>(argvNew), g_rgOptions, SO_O_EXACT | SO_O_HYPHEN_TO_UNDERSCORE);
+				std::unique_ptr<CSimpleOpt> simpleOpt =
+				    std::make_unique<CSimpleOpt>(argcNew - simpleOptionsArgOffset,
+				                                 &argvNew[simpleOptionsArgOffset],
+				                                 simpleOptions,
+				                                 SO_O_EXACT | SO_O_HYPHEN_TO_UNDERSCORE);
 
 				ESOError lastError = SO_SUCCESS;
 				bool foundExpectedOptions = true;
@@ -4769,6 +4840,48 @@ int main() {
 	printf("\n6) Global flag options and CSimpleOpt Tests:\n");
 	allPassed &=
 	    testOptionParsing({ "fdbbackup", "--version", "-h" }, { "--version", "-h" }, true, "6.1 Version flag", true);
+
+	printf("\n6b) Query Option Table Tests:\n");
+	allPassed &= testOptionParsing({ "fdbbackup",
+	                                 "query",
+	                                 "-d",
+	                                 "file:///tmp/backup",
+	                                 "-C",
+	                                 "/tmp/fdb.cluster",
+	                                 "--query-restore-timestamp",
+	                                 "2026/06/02.11:06:50+0800" },
+	                               { "query",
+	                                 "-d",
+	                                 "file:///tmp/backup",
+	                                 "-C",
+	                                 "/tmp/fdb.cluster",
+	                                 "--query-restore-timestamp",
+	                                 "2026/06/02.11:06:50+0800" },
+	                               true,
+	                               "6b.1 Query accepts short cluster file option",
+	                               true,
+	                               g_rgBackupQueryOptions,
+	                               1);
+	allPassed &= testOptionParsing({ "fdbbackup",
+	                                 "query",
+	                                 "-d",
+	                                 "file:///tmp/backup",
+	                                 "--cluster-file",
+	                                 "/tmp/fdb.cluster",
+	                                 "--query-restore-timestamp",
+	                                 "2026/06/02.11:06:50+0800" },
+	                               { "query",
+	                                 "-d",
+	                                 "file:///tmp/backup",
+	                                 "--cluster-file",
+	                                 "/tmp/fdb.cluster",
+	                                 "--query-restore-timestamp",
+	                                 "2026/06/02.11:06:50+0800" },
+	                               true,
+	                               "6b.2 Query accepts long cluster file option",
+	                               true,
+	                               g_rgBackupQueryOptions,
+	                               1);
 
 	printf("\n7) Error Tests:\n");
 	allPassed &= testOptionParsing({ "fdbbackup", "start", "--unknown-option" }, {}, false, "7.1 Unknown option");

@@ -287,7 +287,7 @@ TEST_CASE("performance/flow/IndexedSet/integers") {
 	double start = timer();
 	for (int i = 0; i < x.size(); i++) {
 		int t = x[i];
-		is.insert(std::move(t), 3);
+		is.insert(t, 3);
 	}
 	double end = timer();
 	double kps = x.size() / 1000.0 / (end - start);
@@ -429,9 +429,9 @@ TEST_CASE("/flow/IndexedSet/data constructor and destructor calls match") {
 	count = 0;
 	struct Counter {
 		int value;
-		Counter(int value) : value(value) { count++; }
+		explicit Counter(int value) : value(value) { count++; }
 		~Counter() { count--; }
-		Counter(const Counter& r) : value(r.value) { count++; }
+		explicit(false) Counter(const Counter& r) : value(r.value) { count++; }
 		void operator=(const Counter& r) { value = r.value; }
 		int compare(const Counter& r) const { return ::compare(value, r.value); }
 		bool operator<(const Counter& r) const { return value < r.value; }

@@ -26,12 +26,11 @@
 #include "fdbclient/Schemas.h"
 #include "fdbclient/SpecialKeySpace.h"
 #include "fdbserver/tester/workloads.h"
-#include "flow/actorcompiler.h"
 
 struct SpecialKeySpaceRobustnessWorkload : TestWorkload {
 	static constexpr auto NAME = "SpecialKeySpaceRobustness";
 
-	SpecialKeySpaceRobustnessWorkload(WorkloadContext const& wcx) : TestWorkload(wcx) {}
+	explicit SpecialKeySpaceRobustnessWorkload(WorkloadContext const& wcx) : TestWorkload(wcx) {}
 
 	Future<Void> setup(Database const& cx) override { return _setup(cx, this); }
 	Future<bool> check(Database const& cx) override { return true; }
@@ -232,7 +231,7 @@ struct SpecialKeySpaceRobustnessWorkload : TestWorkload {
 				ASSERT(self->getRangeResultInOrder(result));
 				// check correctness of classType of each process
 				std::vector<ProcessData> workers = co_await getWorkers(&tx->getTransaction());
-				if (workers.size()) {
+				if (!workers.empty()) {
 					for (const auto& worker : workers) {
 						Key addr =
 						    Key("process/class_type/" + formatIpPort(worker.address.ip, worker.address.port))
@@ -308,7 +307,7 @@ struct SpecialKeySpaceRobustnessWorkload : TestWorkload {
 				ASSERT(self->getRangeResultInOrder(class_source_result));
 				// check correctness of classType of each process
 				std::vector<ProcessData> workers = co_await getWorkers(&tx->getTransaction());
-				if (workers.size()) {
+				if (!workers.empty()) {
 					for (const auto& worker : workers) {
 						Key addr =
 						    Key("process/class_source/" + formatIpPort(worker.address.ip, worker.address.port))

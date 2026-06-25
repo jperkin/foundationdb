@@ -25,7 +25,6 @@
 #include "fdbclient/SystemData.h"
 #include "fdbserver/tester/workloads.h"
 #include "fdbserver/core/QuietDatabase.h"
-#include "flow/actorcompiler.h" // This must be the last #include.
 
 // Simplified backup and restore workload specifically for restore validation testing
 // This avoids the complexity of BackupAndRestoreCorrectness which is used by many tests
@@ -38,7 +37,7 @@ struct BackupAndRestoreValidationWorkload : TestWorkload {
 	Key backupTag;
 	Key addPrefix; // Prefix to add during restore (e.g., \xff\x02/rlog/)
 
-	BackupAndRestoreValidationWorkload(WorkloadContext const& wcx) : TestWorkload(wcx) {
+	explicit BackupAndRestoreValidationWorkload(WorkloadContext const& wcx) : TestWorkload(wcx) {
 		backupAfter = getOption(options, "backupAfter"_sr, 10.0);
 		restoreAfter = getOption(options, "restoreAfter"_sr, 30.0);
 		backupTag = getOption(options, "backupTag"_sr, BackupAgentBase::getDefaultTag());

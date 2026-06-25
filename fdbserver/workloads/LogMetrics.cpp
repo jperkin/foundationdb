@@ -28,7 +28,6 @@
 #include "fdbserver/core/WorkerInterface.actor.h"
 #include "fdbserver/core/QuietDatabase.h"
 #include "fdbserver/core/ServerDBInfo.h"
-#include "flow/actorcompiler.h" // This must be the last #include.
 
 struct LogMetricsWorkload : TestWorkload {
 	static constexpr auto NAME = "LogMetrics";
@@ -36,7 +35,7 @@ struct LogMetricsWorkload : TestWorkload {
 	std::string dataFolder;
 	double logAt, logDuration, logsPerSecond;
 
-	LogMetricsWorkload(WorkloadContext const& wcx) : TestWorkload(wcx) {
+	explicit LogMetricsWorkload(WorkloadContext const& wcx) : TestWorkload(wcx) {
 		logAt = getOption(options, "logAt"_sr, 0.0);
 		logDuration = getOption(options, "logDuration"_sr, 30.0);
 		logsPerSecond = getOption(options, "logsPerSecond"_sr, 20);

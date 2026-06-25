@@ -101,7 +101,7 @@ class TransactionCostWorkload : public TestWorkload {
 		}
 
 		int64_t expectedFinalCost() const override {
-			return CLIENT_KNOBS->GLOBAL_TAG_THROTTLING_RW_FUNGIBILITY_RATIO * CLIENT_KNOBS->TAG_THROTTLING_PAGE_SIZE;
+			return CLIENT_KNOBS->TAG_THROTTLING_RW_FUNGIBILITY_RATIO * CLIENT_KNOBS->TAG_THROTTLING_PAGE_SIZE;
 		}
 	};
 
@@ -115,8 +115,7 @@ class TransactionCostWorkload : public TestWorkload {
 		}
 
 		int64_t expectedFinalCost() const override {
-			return 2 * CLIENT_KNOBS->GLOBAL_TAG_THROTTLING_RW_FUNGIBILITY_RATIO *
-			       CLIENT_KNOBS->TAG_THROTTLING_PAGE_SIZE;
+			return 2 * CLIENT_KNOBS->TAG_THROTTLING_RW_FUNGIBILITY_RATIO * CLIENT_KNOBS->TAG_THROTTLING_PAGE_SIZE;
 		}
 	};
 
@@ -132,8 +131,7 @@ class TransactionCostWorkload : public TestWorkload {
 		}
 
 		int64_t expectedFinalCost() const override {
-			return 10 * CLIENT_KNOBS->GLOBAL_TAG_THROTTLING_RW_FUNGIBILITY_RATIO *
-			       CLIENT_KNOBS->TAG_THROTTLING_PAGE_SIZE;
+			return 10 * CLIENT_KNOBS->TAG_THROTTLING_RW_FUNGIBILITY_RATIO * CLIENT_KNOBS->TAG_THROTTLING_PAGE_SIZE;
 		}
 	};
 
@@ -306,7 +304,7 @@ class TransactionCostWorkload : public TestWorkload {
 	}
 
 public:
-	TransactionCostWorkload(WorkloadContext const& wcx) : TestWorkload(wcx) {
+	explicit TransactionCostWorkload(WorkloadContext const& wcx) : TestWorkload(wcx) {
 		iterations = getOption(options, "iterations"_sr, 1000);
 		prefix = getOption(options, "prefix"_sr, "transactionCost/"_sr);
 		debugTransactions = getOption(options, "debug"_sr, false);

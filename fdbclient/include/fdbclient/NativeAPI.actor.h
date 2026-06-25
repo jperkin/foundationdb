@@ -43,8 +43,8 @@
 #include "flow/actorcompiler.h" // has to be last include
 
 /*
-// CLIENT_BUGGIFY should be used to randomly introduce failures at run time (like BUGGIFY but for client side testing)
-// Unlike BUGGIFY, CLIENT_BUGGIFY can be enabled and disabled at runtime.
+// CLIENT_BUGGIFY should be used to randomly introduce failures at run time (like buggify() but for client side testing)
+// Unlike buggify(), CLIENT_BUGGIFY can be enabled and disabled at runtime.
 #define CLIENT_BUGGIFY_WITH_PROB(x)                                                                                    \
     (getSBVar(__FILE__, __LINE__, BuggifyType::Client) && deterministicRandom()->random01() < (x))
 #define CLIENT_BUGGIFY CLIENT_BUGGIFY_WITH_PROB(P_BUGGIFIED_SECTION_FIRES[int(BuggifyType::Client)])
@@ -110,8 +110,8 @@ public:
 
 	Database() {} // an uninitialized database can be destructed or reassigned safely; that's it
 	void operator=(Database const& rhs) { db = rhs.db; }
-	Database(Database const& rhs) : db(rhs.db) {}
-	Database(Database&& r) noexcept : db(std::move(r.db)) {}
+	explicit(false) Database(Database const& rhs) : db(rhs.db) {}
+	explicit(false) Database(Database&& r) noexcept : db(std::move(r.db)) {}
 	void operator=(Database&& r) noexcept { db = std::move(r.db); }
 
 	// For internal use by the native client:
@@ -175,6 +175,7 @@ struct TransactionOptions {
 	bool rawAccess : 1;
 	bool bypassStorageQuota : 1;
 	bool enableReplicaConsistencyCheck : 1;
+	Optional<int64_t> maxGrvQueueDelayMS;
 	int requiredReplicas;
 
 	TransactionPriority priority;
@@ -268,8 +269,6 @@ struct TransactionState : ReferenceCounted<TransactionState> {
 	// Measured by summing the bytes accessed by each read and write operation
 	// after rounding up to the nearest page size and applying a write penalty
 	int64_t totalCost = 0;
-
-	double proxyTagThrottledDuration = 0.0;
 
 	int numErrors = 0;
 	double startTime = 0;
@@ -579,15 +578,15 @@ Future<std::vector<std::pair<KeyRange, CheckpointMetaData>>> getCheckpointMetaDa
     double timeout = 5.0);
 
 // Checks with Data Distributor that it is safe to mark all servers in exclusions as failed
-ACTOR Future<bool> checkSafeExclusions(Database cx, std::vector<AddressExclusion> exclusions);
+Future<bool> checkSafeExclusions(Database cx, std::vector<AddressExclusion> exclusions);
 
 // Measured in bytes, rounded up to the nearest page size. Multiply by fungibility ratio
 // because writes are more expensive than reads.
 inline uint64_t getWriteOperationCost(uint64_t bytes) {
 	if (bytes == 0) {
-		return CLIENT_KNOBS->GLOBAL_TAG_THROTTLING_RW_FUNGIBILITY_RATIO * CLIENT_KNOBS->TAG_THROTTLING_PAGE_SIZE;
+		return CLIENT_KNOBS->TAG_THROTTLING_RW_FUNGIBILITY_RATIO * CLIENT_KNOBS->TAG_THROTTLING_PAGE_SIZE;
 	} else {
-		return CLIENT_KNOBS->GLOBAL_TAG_THROTTLING_RW_FUNGIBILITY_RATIO * CLIENT_KNOBS->TAG_THROTTLING_PAGE_SIZE *
+		return CLIENT_KNOBS->TAG_THROTTLING_RW_FUNGIBILITY_RATIO * CLIENT_KNOBS->TAG_THROTTLING_PAGE_SIZE *
 		       ((bytes - 1) / CLIENT_KNOBS->TAG_THROTTLING_PAGE_SIZE + 1);
 	}
 }
@@ -604,11 +603,11 @@ inline uint64_t getReadOperationCost(uint64_t bytes) {
 // Create a transaction to set the value of system key \xff/conf/perpetual_storage_wiggle. If enable == true, the value
 // will be 1. Otherwise, the value will be 0. The caller should take care of the reset of StorageWiggleMetrics if
 // necessary. Returns the FDB version at which the transaction was committed.
-ACTOR Future<Version> setPerpetualStorageWiggle(Database cx, bool enable, LockAware lockAware = LockAware::False);
+Future<Version> setPerpetualStorageWiggle(Database cx, bool enable, LockAware lockAware = LockAware::False);
 
-ACTOR Future<std::vector<std::pair<UID, StorageWiggleValue>>> readStorageWiggleValues(Database cx,
-                                                                                      bool primary,
-                                                                                      bool use_system_priority);
+Future<std::vector<std::pair<UID, StorageWiggleValue>>> readStorageWiggleValues(Database cx,
+                                                                                bool primary,
+                                                                                bool use_system_priority);
 
 // Returns the maximum legal size of a key. This size will be determined by the prefix of the passed in key
 // (system keys have a larger maximum size). This should be used for generic max key size requests.
@@ -644,16 +643,18 @@ ACTOR Future<Optional<Standalone<VectorRef<KeyRef>>>> splitStorageMetricsWithLoc
     StorageMetrics estimated,
     Optional<int> minSplitBytes);
 
+Future<RangeResult> getWorkerInterfaces(Reference<IClusterConnectionRecord> clusterRecord);
+
 namespace NativeAPI {
 Future<std::vector<std::pair<StorageServerInterface, ProcessClass>>> getServerListAndProcessClasses(Transaction* tr);
 }
-ACTOR Future<KeyRangeLocationInfo> getKeyLocation_internal(Database cx,
-                                                           Key key,
-                                                           SpanContext spanContext,
-                                                           Optional<UID> debugID,
-                                                           UseProvisionalProxies useProvisionalProxies,
-                                                           Reverse isBackward,
-                                                           Version version);
+Future<KeyRangeLocationInfo> getKeyLocation_internal(Database cx,
+                                                     Key key,
+                                                     SpanContext spanContext,
+                                                     Optional<UID> debugID,
+                                                     UseProvisionalProxies useProvisionalProxies,
+                                                     Reverse isBackward,
+                                                     Version version);
 
 Future<Void> refreshTransaction(DatabaseContext* self, Transaction* tr);
 

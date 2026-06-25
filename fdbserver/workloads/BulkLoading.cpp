@@ -26,7 +26,6 @@
 #include "fdbserver/core/RocksDBCheckpointUtils.h"
 #include "fdbserver/core/StorageMetrics.h"
 #include "fdbserver/tester/workloads.h"
-#include "flow/actorcompiler.h" // This must be the last #include.
 
 const std::string simulationBulkLoadFolder = joinPath("simfdb", "bulkload");
 
@@ -78,7 +77,7 @@ struct BulkLoading : TestWorkload {
 		             "BulkDumping" });
 	}
 
-	BulkLoading(WorkloadContext const& wcx) : TestWorkload(wcx), enabled(true), pass(true) {}
+	explicit BulkLoading(WorkloadContext const& wcx) : TestWorkload(wcx), enabled(true), pass(true) {}
 
 	Future<Void> setup(Database const& cx) override { return Void(); }
 
@@ -421,7 +420,7 @@ struct BulkLoading : TestWorkload {
 
 		res.setByteSampleFileName(sampleFileName);
 		std::string bytesSampleFile = res.getBytesSampleFileFullPath();
-		if (bytesSample.size() > 0) {
+		if (!bytesSample.empty()) {
 			sstWriter->open(abspath(bytesSampleFile));
 			for (const auto& kv : bytesSample) {
 				sstWriter->write(kv.key, kv.value);

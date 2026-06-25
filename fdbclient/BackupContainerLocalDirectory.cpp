@@ -18,7 +18,8 @@
  * limitations under the License.
  */
 
-#include "fdbclient/BackupContainerLocalDirectory.h"
+#include "BackupContainerLocalDirectory.h"
+#include "fdbrpc/AsyncFileEncrypted.h"
 #include "fdbrpc/AsyncFileReadAhead.h"
 #include "flow/IAsyncFile.h"
 #include "flow/FaultInjection.h"
@@ -33,7 +34,7 @@ public:
 	BackupFile(const std::string& fileName, Reference<IAsyncFile> file, const std::string& finalFullPath)
 	  : IBackupFile(fileName), m_file(file), m_writeOffset(0), m_finalFullPath(finalFullPath),
 	    m_blockSize(CLIENT_KNOBS->BACKUP_LOCAL_FILE_WRITE_BLOCK) {
-		if (BUGGIFY) {
+		if (buggify()) {
 			m_blockSize = deterministicRandom()->randomInt(100, 20000);
 		}
 		m_buffer.reserve(m_buffer.arena(), m_blockSize);
@@ -137,8 +138,10 @@ std::string BackupContainerLocalDirectory::getURLFormat() {
 }
 
 BackupContainerLocalDirectory::BackupContainerLocalDirectory(const std::string& url,
-                                                             const Optional<std::string>& encryptionKeyFileName) {
+                                                             const Optional<std::string>& encryptionKeyFileName,
+                                                             int encryptionBlockSize) {
 	setEncryptionKey(encryptionKeyFileName);
+	this->encryptionBlockSize = encryptionBlockSize;
 
 	std::string path;
 	if (url.find("file://") != 0) {
@@ -229,10 +232,6 @@ Future<bool> BackupContainerLocalDirectory::exists() {
 
 Future<Reference<IAsyncFile>> BackupContainerLocalDirectory::readFile(const std::string& path) {
 	int flags = IAsyncFile::OPEN_NO_AIO | IAsyncFile::OPEN_READONLY | IAsyncFile::OPEN_UNCACHED;
-	// Skip encryption for properties/ folder
-	if (usesEncryption() && !StringRef(path).startsWith("properties/"_sr)) {
-		flags |= IAsyncFile::OPEN_ENCRYPTED;
-	}
 	INJECT_BLOB_FAULT(http_request_failed, "BackupContainerLocalDirectory::readFile");
 	// Simulation does not properly handle opening the same file from multiple machines using a shared filesystem,
 	// so create a symbolic link to make each file opening appear to be unique.  This could also work in production
@@ -257,6 +256,14 @@ Future<Reference<IAsyncFile>> BackupContainerLocalDirectory::readFile(const std:
 // by the same process that failed the first task execution anyway, which is a very rare case.
 #endif
 	Future<Reference<IAsyncFile>> f = IAsyncFileSystem::filesystem()->open(fullPath, flags, 0644);
+	// Skip encryption for properties/ folder
+	if (usesEncryption() && !StringRef(path).startsWith("properties/"_sr)) {
+		int encBlockSize = encryptionBlockSize;
+		f = map(f, [encBlockSize](Reference<IAsyncFile> r) {
+			return Reference<IAsyncFile>(
+			    makeReference<AsyncFileEncrypted>(r, AsyncFileEncrypted::Mode::READ_ONLY, encBlockSize));
+		});
+	}
 
 	if (g_network->isSimulated()) {
 		int blockSize = 0;
@@ -273,11 +280,11 @@ Future<Reference<IAsyncFile>> BackupContainerLocalDirectory::readFile(const std:
 		}
 		ASSERT(blockSize > 0);
 
-		return map(f, [=](Reference<IAsyncFile> fr) {
+		return map(f, [=](Reference<IAsyncFile> fr) -> Reference<IAsyncFile> {
 			int readAhead = deterministicRandom()->randomInt(0, 3);
 			int reads = deterministicRandom()->randomInt(1, 3);
 			int cacheSize = deterministicRandom()->randomInt(0, 3);
-			return Reference<IAsyncFile>(new AsyncFileReadAheadCache(fr, blockSize, readAhead, reads, cacheSize));
+			return makeReference<AsyncFileReadAheadCache>(fr, blockSize, readAhead, reads, cacheSize);
 		});
 	}
 
@@ -288,15 +295,21 @@ Future<Reference<IBackupFile>> BackupContainerLocalDirectory::writeFile(const st
 	INJECT_BLOB_FAULT(http_request_failed, "BackupContainerLocalDirectory::writeFile");
 	int flags = IAsyncFile::OPEN_NO_AIO | IAsyncFile::OPEN_UNCACHED | IAsyncFile::OPEN_CREATE |
 	            IAsyncFile::OPEN_ATOMIC_WRITE_AND_CREATE | IAsyncFile::OPEN_READWRITE;
-	// Skip encryption for properties/ folder
-	if (usesEncryption() && !StringRef(path).startsWith("properties/"_sr)) {
-		flags |= IAsyncFile::OPEN_ENCRYPTED;
-	}
 	std::string fullPath = joinPath(m_path, path);
 	platform::createDirectory(parentDirectory(fullPath));
 	std::string temp = fullPath + "." + deterministicRandom()->randomUniqueID().toString() + ".temp";
 	Future<Reference<IAsyncFile>> f = IAsyncFileSystem::filesystem()->open(temp, flags, 0644);
-	return map(f, [=](Reference<IAsyncFile> f) { return Reference<IBackupFile>(new BackupFile(path, f, fullPath)); });
+	// Skip encryption for properties/ folder
+	if (usesEncryption() && !StringRef(path).startsWith("properties/"_sr)) {
+		int encBlockSize = encryptionBlockSize;
+		f = map(f, [encBlockSize](Reference<IAsyncFile> r) {
+			return Reference<IAsyncFile>(
+			    makeReference<AsyncFileEncrypted>(r, AsyncFileEncrypted::Mode::APPEND_ONLY, encBlockSize));
+		});
+	}
+	return map(f, [=](Reference<IAsyncFile> file) -> Reference<IBackupFile> {
+		return makeReference<BackupFile>(path, file, fullPath);
+	});
 }
 
 Future<Void> BackupContainerLocalDirectory::writeEntireFile(const std::string& path, const std::string& contents) {
@@ -320,7 +333,7 @@ Future<Void> BackupContainerLocalDirectory::deleteContainer(int* pNumDeleted) {
 	// and make sure it has something in it.
 	return map(describeBackup(false, invalidVersion), [=](BackupDescription const& desc) {
 		// If the backup has no snapshots and no logs then it's probably not a valid backup
-		if (desc.snapshots.size() == 0 && !desc.minLogBegin.present())
+		if (desc.snapshots.empty() && !desc.minLogBegin.present())
 			throw backup_invalid_url();
 
 		int count = platform::eraseDirectoryRecursive(m_path);

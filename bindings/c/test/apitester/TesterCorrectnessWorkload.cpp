@@ -27,7 +27,7 @@ namespace FdbApiTester {
 
 class ApiCorrectnessWorkload : public ApiWorkload {
 public:
-	ApiCorrectnessWorkload(const WorkloadConfig& config) : ApiWorkload(config) {}
+	explicit ApiCorrectnessWorkload(const WorkloadConfig& config) : ApiWorkload(config) {}
 
 private:
 	enum OpType {
@@ -248,7 +248,7 @@ private:
 				                      results->size()));
 			    } else {
 				    auto expected_kv = expected.begin();
-				    for (auto actual_kv : *results) {
+				    for (const auto& actual_kv : *results) {
 					    if (actual_kv.key != expected_kv->key || actual_kv.value != expected_kv->value) {
 						    error(fmt::format(
 						        "randomGetRangeOp mismatch. expected key: {} actual key: {} expected value: "

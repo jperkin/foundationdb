@@ -79,12 +79,8 @@ enum class DataMovementReason : uint8_t {
 // SystemKey is just a Key but with a special type so that instances of it can be found easily throughput the code base
 // and in simulation constructions will verify that no SystemKey is a direct prefix of any other.
 struct SystemKey : Key {
-	SystemKey(Key const& k);
+	explicit SystemKey(Key const& k);
 };
-
-struct RestoreLoaderInterface;
-struct RestoreApplierInterface;
-struct RestoreMasterInterface;
 
 extern const KeyRangeRef normalKeys; // '' to systemKeys.begin
 extern const KeyRangeRef systemKeys; // [FF] to [FF][FF]
@@ -322,6 +318,7 @@ extern const KeyRangeRef configKeys;
 extern const KeyRef configKeysPrefix;
 
 extern const KeyRef backupWorkerEnabledKey;
+extern const KeyRef rangeBackupWorkerEnabledKey;
 extern const KeyRef perpetualStorageWiggleKey;
 extern const KeyRef perpetualStorageWiggleLocalityKey;
 extern const KeyRef perpetualStorageWiggleIDPrefix;
@@ -423,19 +420,6 @@ Value backupProgressValue(const WorkerBackupStatus& status);
 UID decodeBackupProgressKey(const KeyRef& key);
 WorkerBackupStatus decodeBackupProgressValue(const ValueRef& value);
 
-//   "\xff\x02/backupRangePartitionedProgress/[[workerID]]" := "[[WorkerBackupStatus]]"
-extern const KeyRangeRef backupRangePartitionedProgressKeys;
-extern const KeyRef backupRangePartitionedProgressPrefix;
-Key backupRangePartitionedProgressKey(UID workerID);
-Value backupRangePartitionedProgressValue(const WorkerBackupStatus& status);
-UID decodeBackupRangePartitionedProgressKey(const KeyRef& key);
-WorkerBackupStatus decodeBackupRangePartitionedProgressValue(const ValueRef& value);
-
-// The key to signal when partition map has been uploaded for a given version.
-//    "\xff\x02/backupRangePartitionedMapUploaded/<version>" := "1"
-extern const KeyRef backupRangePartitionedMapUploadedPrefix;
-Key backupRangePartitionedMapUploadedKeyFor(Version v);
-
 // The key to signal backup workers a new backup job is submitted.
 //    "\xff\x02/backupStarted" := "[[vector<UID,Version1>]]"
 extern const KeyRef backupStartedKey;
@@ -447,6 +431,32 @@ std::vector<std::pair<UID, Version>> decodeBackupStartedValue(const ValueRef& va
 // 0 = Send a signal to resume/already resumed.
 // 1 = Send a signal to pause/already paused.
 extern const KeyRef backupPausedKey;
+
+//	"\xff\x02/backupPartitionMap/[8-byte epoch][8-byte version]" := "[[PartitionMap]]"
+//	One row per (epoch, version) where a partition map became effective.
+//	Read by catch-up backup workers during recovery.
+extern const KeyRangeRef backupPartitionMapHistoryKeys;
+Key backupPartitionMapHistoryKeyFor(LogEpoch epoch, Version version);
+KeyRange backupPartitionMapHistoryRangeFor(LogEpoch epoch);
+std::pair<LogEpoch, Version> decodeBackupPartitionMapHistoryKey(const KeyRef& key);
+
+// The key BackupAgent writes to request DataDistributor to (re)compute partitions for
+// range-partitioned backup, or to clear the partition state on backup stop. DD watches
+// this key, performs the requested action, and clears it (sets value back to 0).
+//    "\xff\x02/backupPartitionRequired" := "[[0|1|2]]"
+// 0 = cleared / no pending request.
+// 1 = initial partition or manual/adaptive re-partition.
+// 2 = cleanup partitionMap (issued on backup abort/stop when the last backup leaves).
+extern const KeyRef backupPartitionRequiredKey;
+Value backupPartitionRequiredValue(int8_t requestType);
+int8_t decodeBackupPartitionRequiredValue(const ValueRef& value);
+
+// The key DataDistributor writes the computed partition list to. CommitProxy will read this
+// in a later change to construct the PartitionMap.
+//    "\xff\x02/backupPartitionList" := "[[vector<KeyRange>]]"
+extern const KeyRef backupPartitionListKey;
+Value encodeBackupPartitionListValue(const std::vector<KeyRange>& partitions);
+std::vector<KeyRange> decodeBackupPartitionListValue(const ValueRef& value);
 
 //	"\xff/previousCoordinators" = "[[ClusterConnectionString]]"
 //	Set to the encoded structure of the cluster's previous set of coordinators.
@@ -531,8 +541,8 @@ extern const KeyRef bulkDumpOwnerPrefix;
 // "\xff/bulkLoadOwner/[[jobId]]" := "[[BulkDumpOwnerInfo]]" (reuses same struct)
 extern const KeyRangeRef bulkLoadOwnerKeys;
 extern const KeyRef bulkLoadOwnerPrefix;
-const Key bulkDumpOwnerKeyFor(const UID& jobId);
-const Key bulkLoadOwnerKeyFor(const UID& jobId);
+Key bulkDumpOwnerKeyFor(const UID& jobId);
+Key bulkLoadOwnerKeyFor(const UID& jobId);
 
 extern const std::string rangeLockNameForBulkLoad;
 extern const KeyRangeRef rangeLockKeys;
@@ -554,8 +564,6 @@ extern const KeyRef tagThrottleSignalKey;
 extern const KeyRef tagThrottleAutoEnabledKey;
 extern const KeyRef tagThrottleLimitKey;
 extern const KeyRef tagThrottleCountKey;
-extern const KeyRangeRef tagQuotaKeys;
-extern const KeyRef tagQuotaPrefix;
 
 // Log Range constant variables
 // Used in the backup pipeline to track mutations

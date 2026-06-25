@@ -1051,9 +1051,19 @@ Future<Void> trackInitialShards(DataDistributionTracker* self, Reference<Initial
 		co_await yield(TaskPriority::DataDistribution);
 	}
 
+	TraceEvent("TrackInitialShardsComplete", self->distributorId).detail("ShardsTracked", s);
+
+	double changeSizesStart = now();
 	Future<Void> initialSize = changeSizes(self, KeyRangeRef(allKeys.begin, allKeys.end), 0, "ShardInit");
 	self->readyToStart.send(Void());
 	co_await initialSize;
+
+	TraceEvent("TrackInitialShardsMetricsComplete", self->distributorId)
+	    .detail("ElapsedSeconds", now() - changeSizesStart);
+
+	// DDInitDone bookends DDInitRunning — marks DD fully operational. Uses DD* prefix so
+	// the full startup sequence can be queried with Type="DDInit*" in trace logs.
+	TraceEvent("DDInitDone", self->distributorId);
 	self->maxShardSizeUpdater = updateMaxShardSize(self->dbSizeEstimate, self->maxShardSize);
 }
 
@@ -1077,7 +1087,7 @@ Future<Void> fetchTopKShardMetrics_impl(DataDistributionTracker* self, GetTopKMe
 				for (auto t : self->shards->intersectingRanges(range)) {
 					auto& stats = t.value().stats;
 					if (!stats->get().present()) {
-						onChange = stats->onChange();
+						onChange = brokenPromiseToReady(stats->onChange());
 						break;
 					}
 					metrics += t.value().stats->get().get().metrics;
@@ -1127,8 +1137,7 @@ Future<Void> fetchTopKShardMetrics_impl(DataDistributionTracker* self, GetTopKMe
 
 Future<Void> fetchTopKShardMetrics(DataDistributionTracker* self, GetTopKMetricsRequest req) {
 	// simulate time_out
-	Future<Void> f =
-	    g_network->isSimulated() && BUGGIFY_WITH_PROB(0.01) ? Never() : fetchTopKShardMetrics_impl(self, req);
+	Future<Void> f = g_network->isSimulated() && buggify(0.01) ? Never() : fetchTopKShardMetrics_impl(self, req);
 	if (auto const res = co_await timeout(f, SERVER_KNOBS->DD_SHARD_METRICS_TIMEOUT); !res.present()) {
 		CODE_PROBE(true, "TopK DD_SHARD_METRICS_TIMEOUT");
 		req.reply.send(GetTopKMetricsReply());
@@ -1143,7 +1152,7 @@ Future<Void> fetchShardMetrics_impl(DataDistributionTracker* self, GetMetricsReq
 			for (auto t : self->shards->intersectingRanges(req.keys)) {
 				auto& stats = t.value().stats;
 				if (!stats->get().present()) {
-					onChange = stats->onChange();
+					onChange = brokenPromiseToReady(stats->onChange());
 					break;
 				}
 				returnMetrics += t.value().stats->get().get().metrics;
@@ -1187,7 +1196,7 @@ Future<Void> fetchShardMetricsList_impl(DataDistributionTracker* self, GetMetric
 			for (auto t = beginIter; t != endIter; ++t) {
 				auto& stats = t.value().stats;
 				if (!stats->get().present()) {
-					onChange = stats->onChange();
+					onChange = brokenPromiseToReady(stats->onChange());
 					break;
 				}
 				result.push_back_deep(result.arena(),
@@ -1529,7 +1538,7 @@ void PhysicalShardCollection::updateTeamPhysicalShardIDsMap(uint64_t inputPhysic
                                                             uint64_t debugID) {
 	ASSERT(inputTeams.size() <= 2);
 	ASSERT(inputPhysicalShardID != anonymousShardId.first() && inputPhysicalShardID != UID().first());
-	for (auto inputTeam : inputTeams) {
+	for (const auto& inputTeam : inputTeams) {
 		if (!teamPhysicalShardIDs.contains(inputTeam)) {
 			std::set<uint64_t> physicalShardIDSet;
 			physicalShardIDSet.insert(inputPhysicalShardID);
@@ -1622,12 +1631,12 @@ Optional<uint64_t> PhysicalShardCollection::trySelectAvailablePhysicalShardFor(
     StorageMetrics const& moveInMetrics,
     const std::unordered_set<uint64_t>& excludedPhysicalShards,
     uint64_t debugID) {
-	ASSERT(team.servers.size() > 0);
+	ASSERT(!team.servers.empty());
 	// Case: The team is not tracked in the mapping (teamPhysicalShardIDs)
 	if (!teamPhysicalShardIDs.contains(team)) {
 		return Optional<uint64_t>();
 	}
-	ASSERT(teamPhysicalShardIDs[team].size() >= 1);
+	ASSERT(!teamPhysicalShardIDs[team].empty());
 	// Case: The team is tracked in the mapping and the system already has physical shard notion
 	// 		and the number of physicalShard is large
 	std::vector<uint64_t> availablePhysicalShardIDs;
@@ -1649,7 +1658,7 @@ Optional<uint64_t> PhysicalShardCollection::trySelectAvailablePhysicalShardFor(
 		}
 		availablePhysicalShardIDs.push_back(physicalShardID);
 	}
-	if (availablePhysicalShardIDs.size() == 0) {
+	if (availablePhysicalShardIDs.empty()) {
 		/*TraceEvent("TryGetPhysicalShardIDResultFailed")
 		    .detail("Reason", "no valid physicalShard")
 		    .detail("MoveInBytes", moveInMetrics.bytes)
@@ -1786,8 +1795,8 @@ std::pair<Optional<ShardsAffectedByTeamFailure::Team>, bool> PhysicalShardCollec
 	if (!checkPhysicalShardAvailable(inputPhysicalShardID, moveInMetrics)) {
 		return { Optional<ShardsAffectedByTeamFailure::Team>(), false };
 	}
-	for (auto team : physicalShardInstances[inputPhysicalShardID].teams) {
-		if (team.primary == false) {
+	for (const auto& team : physicalShardInstances[inputPhysicalShardID].teams) {
+		if (!team.primary) {
 			/*TraceEvent("TryGetRemoteTeamWith")
 			    .detail("PhysicalShardID", inputPhysicalShardID)
 			    .detail("Team", team.toString())
@@ -1950,7 +1959,7 @@ void PhysicalShardCollection::cleanUpPhysicalShardCollection() {
 	}
 	// Step 2: Clean up teamPhysicalShardIDs
 	std::set<ShardsAffectedByTeamFailure::Team> toRemoveTeams;
-	for (auto [team, _] : teamPhysicalShardIDs) {
+	for (const auto& [team, _] : teamPhysicalShardIDs) {
 		for (auto it = teamPhysicalShardIDs[team].begin(); it != teamPhysicalShardIDs[team].end();) {
 			uint64_t physicalShardID = *it;
 			if (!physicalShardInstances.contains(physicalShardID)) {
@@ -1961,12 +1970,12 @@ void PhysicalShardCollection::cleanUpPhysicalShardCollection() {
 				it++;
 			}
 		}
-		if (teamPhysicalShardIDs[team].size() == 0) {
+		if (teamPhysicalShardIDs[team].empty()) {
 			// If a team has no physicalShard, remove the team from teamPhysicalShardID
 			toRemoveTeams.insert(team);
 		}
 	}
-	for (auto team : toRemoveTeams) {
+	for (const auto& team : toRemoveTeams) {
 		teamPhysicalShardIDs.erase(team);
 	}
 }
@@ -1975,14 +1984,14 @@ void PhysicalShardCollection::logPhysicalShardCollection() {
 	ASSERT(SERVER_KNOBS->SHARD_ENCODE_LOCATION_METADATA);
 	ASSERT(SERVER_KNOBS->ENABLE_DD_PHYSICAL_SHARD);
 	// Step 1: Logging non-empty physicalShard
-	for (auto [physicalShardID, physicalShard] : physicalShardInstances) {
+	for (const auto& [physicalShardID, physicalShard] : physicalShardInstances) {
 		ASSERT(physicalShardID == physicalShard.id);
 		TraceEvent e("PhysicalShardStatus");
 		e.detail("PhysicalShardID", physicalShardID);
 		e.detail("TotalBytes", physicalShard.metrics.bytes);
 	}
 	// Step 2: Logging TeamPhysicalShardStatus
-	for (auto [team, physicalShardIDs] : teamPhysicalShardIDs) {
+	for (const auto& [team, physicalShardIDs] : teamPhysicalShardIDs) {
 		TraceEvent e("TeamPhysicalShardStatus");
 		e.detail("Team", team.toString());
 		// std::string metricsStr = "";
@@ -2019,7 +2028,7 @@ void PhysicalShardCollection::logPhysicalShardCollection() {
 	}
 	// Step 3: Logging StorageServerPhysicalShardStatus
 	std::map<UID, std::map<uint64_t, int64_t>> storageServerPhysicalShardStatus;
-	for (auto [team, _] : teamPhysicalShardIDs) {
+	for (const auto& [team, _] : teamPhysicalShardIDs) {
 		for (auto ssid : team.servers) {
 			for (auto it = teamPhysicalShardIDs[team].begin(); it != teamPhysicalShardIDs[team].end();) {
 				uint64_t physicalShardID = *it;
@@ -2039,7 +2048,7 @@ void PhysicalShardCollection::logPhysicalShardCollection() {
 			}
 		}
 	}
-	for (auto [serverID, physicalShardMetrics] : storageServerPhysicalShardStatus) {
+	for (const auto& [serverID, physicalShardMetrics] : storageServerPhysicalShardStatus) {
 		TraceEvent e("ServerPhysicalShardStatus");
 		e.detail("Server", serverID);
 		e.detail("NumPhysicalShards", physicalShardMetrics.size());

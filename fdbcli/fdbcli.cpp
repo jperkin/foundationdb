@@ -26,13 +26,12 @@
 #include "fdbclient/IClientApi.h"
 #include "fdbclient/MultiVersionTransaction.h"
 #include "fdbclient/Status.h"
-#include "fdbclient/KeyBackedTypes.actor.h"
+#include "fdbclient/KeyBackedTypes.h"
 #include "fdbclient/StatusClient.h"
 #include "fdbclient/StorageServerInterface.h"
 #include "fdbclient/DatabaseContext.h"
 #include "fdbclient/GlobalConfig.h"
 #include "fdbclient/Knobs.h"
-#include "fdbclient/NativeAPI.actor.h"
 #include "fdbclient/ClusterInterface.h"
 #include "fdbclient/ManagementAPI.h"
 #include "fdbclient/Schemas.h"
@@ -111,6 +110,7 @@ CSimpleOpt::SOption g_rgOptions[] = { { OPT_CONNFILE, "-C", SO_REQ_SEP },
 	                                  { OPT_DATABASE, "-d", SO_REQ_SEP },
 	                                  { OPT_TRACE, "--log", SO_NONE },
 	                                  { OPT_TRACE_DIR, "--log-dir", SO_REQ_SEP },
+	                                  { OPT_TRACE_DIR, "--logdir", SO_REQ_SEP },
 	                                  { OPT_LOGGROUP, "--log-group", SO_REQ_SEP },
 	                                  { OPT_TIMEOUT, "--timeout", SO_REQ_SEP },
 	                                  { OPT_EXEC, "--exec", SO_REQ_SEP },
@@ -246,7 +246,7 @@ private:
 		std::map<std::string, typename T::Option> legalOptions;
 
 		OptionGroup() = default;
-		OptionGroup(OptionGroup<T>& base)
+		explicit(false) OptionGroup(OptionGroup<T>& base)
 		  : options(base.options.begin(), base.options.end()), legalOptions(base.legalOptions) {}
 
 		// Enable or disable an option. Returns true if option value changed
@@ -328,7 +328,7 @@ public:
 			transactionOptions.legalOptions[itr->second.name] = itr->first;
 	}
 
-	FdbOptions(FdbOptions& base) = default;
+	explicit(false) FdbOptions(FdbOptions& base) = default;
 };
 
 static std::string formatStringRef(StringRef item, bool fullEscaping = false) {
@@ -481,7 +481,8 @@ static void printProgramUsage(const char* name) {
 	       "                 then `%s'.\n",
 	       platform::getDefaultClusterFilePath().c_str());
 	printf("  --log          Enables trace file logging for the CLI session.\n"
-	       "  --log-dir PATH Specifies the output directory for trace files. If\n"
+	       "  --log-dir PATH, --logdir PATH\n"
+	       "                 Specifies the output directory for trace files. If\n"
 	       "                 unspecified, defaults to the current directory. Has\n"
 	       "                 no effect unless --log is specified.\n"
 	       "  --log-group LOG_GROUP\n"
@@ -535,10 +536,11 @@ void initHelp() {
 	    "clear a key from the database",
 	    "Clear succeeds even if the specified key is not present, but may fail because of conflicts." ESCAPINGK);
 	helpMap["clearrange"] = CommandHelp(
-	    "clearrange <BEGINKEY> <ENDKEY>",
+	    "clearrange <BEGINKEY> [ENDKEY]",
 	    "clear a range of keys from the database",
-	    "All keys between BEGINKEY (inclusive) and ENDKEY (exclusive) are cleared from the database. This command will "
-	    "succeed even if the specified range is empty, but may fail because of conflicts." ESCAPINGK);
+	    "All keys between BEGINKEY (inclusive) and ENDKEY (exclusive) are cleared from the database. If ENDKEY is "
+	    "omitted, then all keys starting with BEGINKEY are cleared. This command will succeed even if the specified "
+	    "range is empty, but may fail because of conflicts." ESCAPINGK);
 	helpMap["exit"] = CommandHelp("exit", "exit the CLI", "");
 	helpMap["quit"] = CommandHelp();
 	helpMap["waitconnected"] = CommandHelp();
@@ -604,7 +606,7 @@ void printBuildInformation() {
 void printHelpOverview() {
 	printf("\nList of commands:\n\n");
 	for (const auto& [command, help] : helpMap) {
-		if (help.short_desc.size())
+		if (!help.short_desc.empty())
 			printf(" %s:\n      %s\n", command.c_str(), help.short_desc.c_str());
 	}
 	printf("\nFor information on a specific command, type `help <command>'.");
@@ -614,7 +616,7 @@ void printHelpOverview() {
 
 void printHelp(StringRef command) {
 	auto i = helpMap.find(command.toString());
-	if (i != helpMap.end() && i->second.short_desc.size()) {
+	if (i != helpMap.end() && !i->second.short_desc.empty()) {
 		printf("\n%s\n\n", i->second.usage.c_str());
 		auto cstr = i->second.short_desc.c_str();
 		printf("%c%s.\n", toupper(cstr[0]), cstr + 1);
@@ -825,7 +827,7 @@ void fdbcliCompCmd(std::string const& text, std::vector<std::string>& lc) {
 	std::string base_input = text;
 
 	// If there is a token and the input does not end in a space
-	if (count && text.size() > 0 && text[text.size() - 1] != ' ') {
+	if (count && !text.empty() && text[text.size() - 1] != ' ') {
 		count--; // Ignore the last token for purposes of later code
 		ntext = tokens.back().toString();
 		base_input = whole_line.substr(0, whole_line.rfind(ntext));
@@ -866,6 +868,8 @@ void LogCommand(std::string line, UID randomID, std::string errMsg) {
 }
 
 struct CLIOptions {
+	static constexpr int DEFERRED_EXIT_CODE = -2;
+
 	std::string program_name;
 	int exit_code = -1;
 
@@ -878,6 +882,7 @@ struct CLIOptions {
 	std::string logGroup;
 	int exit_timeout = 0;
 	Optional<std::string> exec;
+	Optional<std::string> statusJsonFile;
 	bool initialStatusCheck = true;
 	bool cliHints = true;
 	bool cliHistory = true;
@@ -908,12 +913,15 @@ struct CLIOptions {
 
 		while (args.Next()) {
 			int ec = processArg(args);
+			if (ec == DEFERRED_EXIT_CODE) {
+				return;
+			}
 			if (ec != -1) {
 				exit_code = ec;
 				return;
 			}
 		}
-		if (exit_timeout && !exec.present()) {
+		if (exit_timeout && !exec.present() && !statusJsonFile.present()) {
 			fprintf(stderr, "ERROR: --timeout may only be specified with --exec\n");
 			exit_code = FDB_EXIT_ERROR;
 			return;
@@ -1019,7 +1027,8 @@ struct CLIOptions {
 			printProgramUsage(program_name.c_str());
 			return 0;
 		case OPT_STATUS_FROM_JSON:
-			return printStatusFromJSON(args.OptionArg());
+			statusJsonFile = args.OptionArg();
+			return DEFERRED_EXIT_CODE;
 		case OPT_TRACE_FORMAT:
 			if (!validateTraceFormat(args.OptionArg())) {
 				fprintf(stderr, "WARNING: Unrecognized trace format `%s'\n", args.OptionArg());
@@ -1169,12 +1178,12 @@ Future<int> cli(CLIOptions opt, LineNoise* plinenoise, Reference<ClusterConnecti
 			}
 			line = rawline.get();
 
-			if (!line.size())
+			if (line.empty())
 				continue;
 
 			// Don't put dangerous commands in the command history
 			if (line.find("writemode") == std::string::npos && line.find("expensive_data_check") == std::string::npos &&
-			    line.find("unlock") == std::string::npos && line.find("blobrange") == std::string::npos)
+			    line.find("unlock") == std::string::npos)
 				linenoise.historyAdd(line);
 		}
 
@@ -1191,7 +1200,7 @@ Future<int> cli(CLIOptions opt, LineNoise* plinenoise, Reference<ClusterConnecti
 			if (partial)
 				LogCommand(line, randomID, "ERROR: unterminated quote");
 			if (malformed || partial) {
-				if (parsed.size() > 0) {
+				if (!parsed.empty()) {
 					// Denote via a special token that the command was a parse failure.
 					auto& last_command = parsed.back();
 					last_command.insert(last_command.begin(),
@@ -1211,7 +1220,7 @@ Future<int> cli(CLIOptions opt, LineNoise* plinenoise, Reference<ClusterConnecti
 					break;
 				}
 
-				if (!tokens.size())
+				if (tokens.empty())
 					continue;
 
 				if (tokencmp(tokens[0], "parse_error")) {
@@ -1233,7 +1242,7 @@ Future<int> cli(CLIOptions opt, LineNoise* plinenoise, Reference<ClusterConnecti
 					printf("\n");
 				}
 
-				if (!helpMap.count(tokens[0].toString()) && !hiddenCommands.count(tokens[0].toString())) {
+				if (!helpMap.contains(tokens[0].toString()) && !hiddenCommands.contains(tokens[0].toString())) {
 					fprintf(stderr, "ERROR: Unknown command `%s'. Try `help'?\n", formatStringRef(tokens[0]).c_str());
 					is_error = true;
 					continue;
@@ -1617,6 +1626,14 @@ Future<int> cli(CLIOptions opt, LineNoise* plinenoise, Reference<ClusterConnecti
 					continue;
 				}
 
+				if (tokencmp(tokens[0], "rangelock")) {
+					bool _result = co_await makeInterruptable(rangeLockCommandActor(localDb, tokens));
+					if (!_result) {
+						is_error = true;
+					}
+					continue;
+				}
+
 				if (tokencmp(tokens[0], "force_recovery_with_data_loss")) {
 					bool _result = co_await makeInterruptable(forceRecoveryWithDataLossCommandActor(db, tokens));
 					if (!_result)
@@ -1704,7 +1721,7 @@ Future<int> cli(CLIOptions opt, LineNoise* plinenoise, Reference<ClusterConnecti
 						Standalone<StringRef> endKey;
 						if (tokens.size() >= 3) {
 							endKey = tokens[2];
-						} else if (tokens[1].size() == 0) {
+						} else if (tokens[1].empty()) {
 							endKey = normalKeys.end;
 						} else if (tokens[1] == systemKeys.begin) {
 							endKey = systemKeys.end;
@@ -1797,16 +1814,25 @@ Future<int> cli(CLIOptions opt, LineNoise* plinenoise, Reference<ClusterConnecti
 						continue;
 					}
 
-					if (tokens.size() != 3) {
-						printUsage(tokens[0]);
-						is_error = true;
-					} else {
+					if (tokens.size() == 2) {
+						// Prefix mode: clear all keys starting with BEGINKEY
+						getTransaction(db, tr, options, intrans);
+						tr->clear(prefixRange(tokens[1]));
+
+						if (!intrans) {
+							co_await commitTransaction(tr);
+						}
+					} else if (tokens.size() == 3) {
+						// Range mode: clear keys in [BEGINKEY, ENDKEY)
 						getTransaction(db, tr, options, intrans);
 						tr->clear(KeyRangeRef(tokens[1], tokens[2]));
 
 						if (!intrans) {
 							co_await commitTransaction(tr);
 						}
+					} else {
+						printUsage(tokens[0]);
+						is_error = true;
 					}
 					continue;
 				}
@@ -1945,7 +1971,7 @@ Future<int> runCli(CLIOptions opt, Reference<ClusterConnectionFile> ccf) {
 		    bool partial = false;
 		    std::string linecopy = line;
 		    std::vector<std::vector<StringRef>> parsed = parseLine(linecopy, error, partial);
-		    if (parsed.size() == 0 || parsed.back().size() == 0)
+		    if (parsed.empty() || parsed.back().empty())
 			    return LineNoise::Hint();
 		    StringRef command = parsed.back().front();
 		    int finishedParameters = parsed.back().size() + error;
@@ -2083,7 +2109,7 @@ int main(int argc, char** argv) {
 	initHelp();
 
 	// deferred TLS options
-	if (opt.tlsCertPath.size()) {
+	if (!opt.tlsCertPath.empty()) {
 		try {
 			setNetworkOption(FDBNetworkOptions::TLS_CERT_PATH, opt.tlsCertPath);
 		} catch (Error& e) {
@@ -2092,7 +2118,7 @@ int main(int argc, char** argv) {
 		}
 	}
 
-	if (opt.tlsCAPath.size()) {
+	if (!opt.tlsCAPath.empty()) {
 		try {
 			setNetworkOption(FDBNetworkOptions::TLS_CA_PATH, opt.tlsCAPath);
 		} catch (Error& e) {
@@ -2100,9 +2126,9 @@ int main(int argc, char** argv) {
 			return 1;
 		}
 	}
-	if (opt.tlsKeyPath.size()) {
+	if (!opt.tlsKeyPath.empty()) {
 		try {
-			if (opt.tlsPassword.size())
+			if (!opt.tlsPassword.empty())
 				setNetworkOption(FDBNetworkOptions::TLS_PASSWORD, opt.tlsPassword);
 
 			setNetworkOption(FDBNetworkOptions::TLS_KEY_PATH, opt.tlsKeyPath);
@@ -2111,7 +2137,7 @@ int main(int argc, char** argv) {
 			return 1;
 		}
 	}
-	if (opt.tlsVerifyPeers.size()) {
+	if (!opt.tlsVerifyPeers.empty()) {
 		try {
 			setNetworkOption(FDBNetworkOptions::TLS_VERIFY_PEERS, opt.tlsVerifyPeers);
 		} catch (Error& e) {
@@ -2135,6 +2161,21 @@ int main(int argc, char** argv) {
 	} catch (Error& e) {
 		fprintf(stderr, "ERROR: cannot disable logging client related information (%s)\n", e.what());
 		return 1;
+	}
+
+	if (opt.statusJsonFile.present()) {
+		try {
+			API->selectApiVersion(opt.apiVersion);
+			if (opt.useFutureProtocolVersion) {
+				API->useFutureProtocolVersion();
+			}
+			API->setupNetwork();
+			opt.setupKnobs();
+			return printStatusFromJSON(opt.statusJsonFile.get());
+		} catch (Error& e) {
+			fprintf(stderr, "ERROR: %s (%d)\n", e.what(), e.code());
+			return 1;
+		}
 	}
 
 	if (opt.debugTLS) {

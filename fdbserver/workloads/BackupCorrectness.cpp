@@ -59,7 +59,7 @@ struct BackupAndRestoreCorrectnessWorkload : TestWorkload {
 		out.insert({ "RandomRangeLock" });
 	}
 
-	BackupAndRestoreCorrectnessWorkload(WorkloadContext const& wcx) : TestWorkload(wcx) {
+	explicit BackupAndRestoreCorrectnessWorkload(WorkloadContext const& wcx) : TestWorkload(wcx) {
 		locked.set(sharedRandomNumber % 2);
 		backupAfter = getOption(options, "backupAfter"_sr, 10.0);
 		double minBackupAfter = getOption(options, "minBackupAfter"_sr, backupAfter);
@@ -187,7 +187,7 @@ struct BackupAndRestoreCorrectnessWorkload : TestWorkload {
 	}
 
 	Future<Void> _setup(Database cx, BackupAndRestoreCorrectnessWorkload* self) {
-		if (BUGGIFY) {
+		if (buggify()) {
 			for (auto r : getSystemBackupRanges()) {
 				self->backupRanges.push_back_deep(self->backupRanges.arena(), r);
 			}
@@ -286,7 +286,7 @@ struct BackupAndRestoreCorrectnessWorkload : TestWorkload {
 		Future<Void> stopDifferentialFuture = delay(stopDifferentialDelay);
 		co_await delay(startDelay);
 
-		if (startDelay || BUGGIFY) {
+		if (startDelay || buggify()) {
 			TraceEvent("BARW_DoBackupAbortBackup1", randomID)
 			    .detail("Tag", printable(tag))
 			    .detail("StartDelay", startDelay);
@@ -315,9 +315,11 @@ struct BackupAndRestoreCorrectnessWorkload : TestWorkload {
 			                                   tag.toString(),
 			                                   backupRanges,
 			                                   StopWhenDone{ !stopDifferentialDelay },
-			                                   UsePartitionedLog::False,
+			                                   MutationLogType::DEFAULT,
 			                                   IncrementalBackupOnly::False,
-			                                   encryptionKeyFileName);
+			                                   encryptionKeyFileName,
+			                                   encryptionKeyFileName.present() ? DEFAULT_ENCRYPTION_BLOCK_SIZE : 0,
+			                                   /*snapshotMode=*/0);
 		} catch (Error& e) {
 			TraceEvent("BARW_DoBackupSubmitBackupException", randomID).error(e).detail("Tag", printable(tag));
 			if (e.code() != error_code_backup_unneeded && e.code() != error_code_backup_duplicate)
@@ -336,7 +338,7 @@ struct BackupAndRestoreCorrectnessWorkload : TestWorkload {
 			    .detail("DifferentialAfter", stopDifferentialDelay);
 
 			try {
-				if (BUGGIFY) {
+				if (buggify()) {
 					KeyBackedTag backupTag = makeBackupTag(tag.toString());
 					TraceEvent("BARW_DoBackupWaitForRestorable", randomID).detail("Tag", backupTag.tagName);
 
@@ -538,7 +540,7 @@ struct BackupAndRestoreCorrectnessWorkload : TestWorkload {
 		    .detail("DifferentialAfter", stopDifferentialAfter);
 
 		UID randomID = nondeterministicRandom()->randomUniqueID();
-		if (allowPauses && BUGGIFY) {
+		if (allowPauses && buggify()) {
 			Future<Void> cp = changePaused(cx, &backupAgent);
 		}
 
@@ -599,7 +601,7 @@ struct BackupAndRestoreCorrectnessWorkload : TestWorkload {
 			    co_await BackupConfig(logUid).backupContainer().getD(cx.getReference());
 
 			// Occasionally start yet another backup that might still be running when we restore
-			if (!locked && BUGGIFY) {
+			if (!locked && buggify()) {
 				TraceEvent("BARW_SubmitBackup2", randomID).detail("Tag", printable(backupTag));
 				try {
 					extraBackup = backupAgent.submitBackup(cx,
@@ -625,7 +627,8 @@ struct BackupAndRestoreCorrectnessWorkload : TestWorkload {
 			if (lastBackupContainer && performRestore) {
 				auto container = IBackupContainer::openContainer(lastBackupContainer->getURL(),
 				                                                 lastBackupContainer->getProxy(),
-				                                                 lastBackupContainer->getEncryptionKeyFileName());
+				                                                 lastBackupContainer->getEncryptionKeyFileName(),
+				                                                 lastBackupContainer->getEncryptionBlockSize());
 				BackupDescription desc = co_await container->describeBackup();
 
 				if (deterministicRandom()->random01() < 0.5) {
@@ -748,7 +751,7 @@ struct BackupAndRestoreCorrectnessWorkload : TestWorkload {
 				}
 
 				// Sometimes kill and restart the restore
-				if (BUGGIFY) {
+				if (buggify()) {
 					co_await delay(deterministicRandom()->randomInt(0, 10));
 					if (multipleRangesInOneTag) {
 						FileBackupAgent::ERestoreState rs = co_await backupAgent.abortRestore(cx, restoreTags[0]);
@@ -899,7 +902,7 @@ struct BackupAndRestoreCorrectnessWorkload : TestWorkload {
 					    co_await tr->getRange(KeyRange(KeyRangeRef(backupAgentKey, strinc(backupAgentKey))), 100);
 
 					// Error if the system keyspace for the backup tag is not empty
-					if (agentValues.size() > 0) {
+					if (!agentValues.empty()) {
 						displaySystemKeys++;
 						printf("BackupCorrectnessLeftOverMutationKeys: (%d) %s\n",
 						       agentValues.size(),
@@ -932,12 +935,12 @@ struct BackupAndRestoreCorrectnessWorkload : TestWorkload {
 
 					RangeResult versions = co_await tr->getRange(
 					    KeyRange(KeyRangeRef(backupLatestVersionsPath, strinc(backupLatestVersionsPath))), 1);
-					if (!shareLogRange || !versions.size()) {
+					if (!shareLogRange || versions.empty()) {
 						RangeResult logValues = co_await tr->getRange(
 						    KeyRange(KeyRangeRef(backupLogValuesKey, strinc(backupLogValuesKey))), 100);
 
 						// Error if the log/mutation keyspace for the backup tag  is not empty
-						if (logValues.size() > 0) {
+						if (!logValues.empty()) {
 							displaySystemKeys++;
 							printf("BackupCorrectnessLeftOverLogKeys: (%d) %s\n",
 							       logValues.size(),
@@ -971,9 +974,9 @@ struct BackupAndRestoreCorrectnessWorkload : TestWorkload {
 			}
 
 			// SOMEDAY: Remove after backup agents can exist quiescently
-			if ((g_simulator->backupAgents == ISimulator::BackupAgentType::BackupToFile) &&
+			if ((fdbSimulationPolicyState().backupAgents == FDBBackupAgentType::BackupToFile) &&
 			    (!BackupAndRestoreCorrectnessWorkload::backupAgentRequests)) {
-				g_simulator->backupAgents = ISimulator::BackupAgentType::NoBackupAgents;
+				fdbSimulationPolicyState().backupAgents = FDBBackupAgentType::NoBackupAgents;
 			}
 		} catch (Error& e) {
 			TraceEvent(SevError, "BackupAndRestoreCorrectness").error(e).GetLastError();

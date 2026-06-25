@@ -10,13 +10,10 @@ set(TEST_AGGREGATE_TRACES "NONE" CACHE STRING "Create aggregated trace files (NO
 set(TEST_LOG_FORMAT "xml" CACHE STRING "Format for test trace files (xml, json)")
 set(TEST_INCLUDE ".*" CACHE STRING "Include only tests that match the given regex")
 set(TEST_EXCLUDE ".^" CACHE STRING "Exclude all tests matching the given regex")
-set(SANITIZER_OPTIONS "UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1;TSAN_OPTIONS=suppressions=${CMAKE_SOURCE_DIR}/contrib/tsan.suppressions;LSAN_OPTIONS=suppressions=${CMAKE_SOURCE_DIR}/contrib/lsan.suppressions" CACHE STRING "Environment variables setting sanitizer options")
 
-# for the restart test we optimally want to use the last stable fdbserver
-# to test upgrades.
-# FIXME: explain what `last stable` means in the above comment.  Does it mean "last stable non-main release?"
-# Below we are using 7.1.* so that is pretty old stuff.  Does it mean "most recent patch release of the oldest X.Y release family"?
-# FIXME: Regardless of what "last stable" refers to, explain why this is important.
+# For the restart test, prefer an installed fdbserver from an older stable release
+# to exercise upgrade paths from existing on-disk state. If it is unavailable,
+# the current build is used instead.
 if(WITH_PYTHON)
   find_program(OLD_FDBSERVER_BINARY
     fdbserver-7.1.69 fdbserver fdbserver.exe
@@ -171,8 +168,6 @@ if(WITH_PYTHON)
   add_fdb_test(TEST_FILES fast/CycleTest.toml)
   add_fdb_test(TEST_FILES fast/RocksdbNondeterministicTest.toml)
   add_fdb_test(TEST_FILES fast/DataLossRecovery.toml)
-  # EncryptionUnitTests is only a convenience file to run the different types of encryption tests at once. Do not enable in general ensembles
-  add_fdb_test(TEST_FILES fast/EncryptionUnitTests.toml IGNORE)
   add_fdb_test(TEST_FILES fast/FuzzApiCorrectness.toml)
   add_fdb_test(TEST_FILES fast/FuzzApiCorrectnessClean.toml)
   add_fdb_test(TEST_FILES fast/HTTPKeyValueStore.toml)
@@ -180,14 +175,20 @@ if(WITH_PYTHON)
   add_fdb_test(TEST_FILES fast/IncrementTest.toml)
   add_fdb_test(TEST_FILES fast/InventoryTestAlmostReadOnly.toml)
   add_fdb_test(TEST_FILES fast/InventoryTestSomeWrites.toml)
+  add_fdb_test(TEST_FILES fast/KRMCoalescingFragmentation.toml)
   add_fdb_test(TEST_FILES fast/LocalRatekeeper.toml)
   add_fdb_test(TEST_FILES fast/LongStackWriteDuringRead.toml)
   add_fdb_test(TEST_FILES fast/LowLatency.toml)
+  add_fdb_test(TEST_FILES fast/MaxGrvQueueDelay.toml)
+  add_fdb_test(TEST_FILES fast/MinimumThroughput.toml)
 
   # TODO: Fix failures and re-enable this test:
   add_fdb_test(TEST_FILES fast/LowLatencySingleClog.toml IGNORE)
   add_fdb_test(TEST_FILES fast/MemoryLifetime.toml)
   add_fdb_test(TEST_FILES fast/MoveKeysCycle.toml)
+  add_fdb_test(TEST_FILES fast/CheckMetadataEncodingForward.toml)
+  add_fdb_test(TEST_FILES fast/CheckMetadataEncodingOldPath.toml)
+  add_fdb_test(TEST_FILES fast/ShardEncodeRollback.toml)
   add_fdb_test(TEST_FILES fast/MutationLogReaderCorrectness.toml)
 
   add_fdb_test(TEST_FILES fast/GetEstimatedRangeSize.toml)
@@ -208,6 +209,7 @@ if(WITH_PYTHON)
   add_fdb_test(TEST_FILES fast/Sideband.toml)
   add_fdb_test(TEST_FILES fast/SidebandSingle.toml)
   add_fdb_test(TEST_FILES fast/SidebandWithStatus.toml)
+  add_fdb_test(TEST_FILES fast/StatusDuringOutage.toml)
   add_fdb_test(TEST_FILES fast/SimpleAtomicAdd.toml)
   add_fdb_test(TEST_FILES fast/SpecialKeySpaceCorrectness.toml)
   add_fdb_test(TEST_FILES fast/SpecialKeySpaceRobustness.toml)
@@ -283,7 +285,6 @@ if(WITH_PYTHON)
   add_fdb_test(TEST_FILES rare/CycleWithKills.toml)
   add_fdb_test(TEST_FILES rare/CycleWithDeadHall.toml)
   add_fdb_test(TEST_FILES rare/DataDistributionMetrics.toml)
-  add_fdb_test(TEST_FILES rare/ExpectStableThroughput.toml)
   add_fdb_test(TEST_FILES rare/HighContentionPrefixAllocator.toml)
   add_fdb_test(TEST_FILES rare/InventoryTestHeavyWrites.toml)
   add_fdb_test(TEST_FILES rare/LargeApiCorrectness.toml)
@@ -297,7 +298,6 @@ if(WITH_PYTHON)
   add_fdb_test(TEST_FILES rare/RedwoodCorrectnessBTree.toml)
   add_fdb_test(TEST_FILES rare/RedwoodDeltaTree.toml)
   add_fdb_test(TEST_FILES rare/Throttling.toml)
-  add_fdb_test(TEST_FILES rare/ThroughputQuota.toml)
   add_fdb_test(TEST_FILES rare/TransactionCost.toml)
   add_fdb_test(TEST_FILES rare/TransactionTagApiCorrectness.toml)
   add_fdb_test(TEST_FILES rare/TransactionTagSwizzledApiCorrectness.toml)

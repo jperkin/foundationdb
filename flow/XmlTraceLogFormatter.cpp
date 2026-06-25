@@ -21,7 +21,7 @@
 #include "flow/flow.h"
 #include "flow/ScopeExit.h"
 #include "flow/UnitTest.h"
-#include "flow/XmlTraceLogFormatter.h"
+#include "XmlTraceLogFormatter.h"
 
 void XmlTraceLogFormatter::addref() {
 	ReferenceCounted<XmlTraceLogFormatter>::addref();
@@ -75,14 +75,14 @@ void XmlTraceLogFormatter::escape(std::ostringstream& oss, std::string source) c
 		source = source.substr(index + 1);
 	}
 
-	oss << std::move(source);
+	oss << source;
 }
 
 std::string XmlTraceLogFormatter::formatEvent(const TraceEventFields& fields) const {
 	std::ostringstream oss;
 	oss << "<Event ";
 
-	for (auto itr : fields) {
+	for (const auto& itr : fields) {
 		escape(oss, itr.first);
 		oss << "=\"";
 		escape(oss, itr.second);
@@ -120,7 +120,7 @@ TEST_CASE("/flow/XmlTraceEscape") {
 	                            "<<even more>\n";
 
 	auto defaultSeverity = xmlIllegalCharSeverity;
-	ScopeExit cleanup = [&]() { xmlIllegalCharSeverity = defaultSeverity; };
+	ScopeExit cleanup([&]() { xmlIllegalCharSeverity = defaultSeverity; });
 
 	xmlIllegalCharSeverity = SevInfo;
 

@@ -18,7 +18,9 @@
  * limitations under the License.
  */
 
-#include "fdbclient/ClientKnobs.h"
+#include <algorithm>
+
+#include "fdbclient/Knobs.h"
 #include "fdbserver/core/Knobs.h"
 #include "fdbserver/core/ServerDBInfo.h"
 #include "fdbserver/core/WaitFailure.h"
@@ -310,7 +312,7 @@ Future<Void> Ratekeeper::monitorHotShards(Reference<AsyncVar<ServerDBInfo> const
 			TraceEvent(SevWarn, "CannotMonitorHotShardForSS").detail("SS", ssi);
 			continue;
 		}
-		if (!setReq.throttledShards.size()) {
+		if (setReq.throttledShards.empty()) {
 			continue;
 		}
 		setReq.expirationTime = now() + SERVER_KNOBS->HOT_SHARD_THROTTLING_EXPIRE_AFTER;
@@ -384,20 +386,9 @@ Future<Void> Ratekeeper::handleGetRateInfoReqs(RatekeeperInterface rkInterf,
 			p.lastThrottledTagChangeId = tagThrottler->getThrottledTagChangeId();
 			p.lastTagPushTime = now();
 
-			bool returningTagsToProxy{ false };
-			if (SERVER_KNOBS->ENFORCE_TAG_THROTTLING_ON_PROXIES) {
-				auto proxyThrottledTags = tagThrottler->getProxyRates(grvProxyInfo.size());
-				if (!SERVER_KNOBS->GLOBAL_TAG_THROTTLING_REPORT_ONLY) {
-					returningTagsToProxy = proxyThrottledTags.size() > 0;
-					reply.proxyThrottledTags = std::move(proxyThrottledTags);
-				}
-			} else {
-				auto clientThrottledTags = tagThrottler->getClientRates();
-				if (!SERVER_KNOBS->GLOBAL_TAG_THROTTLING_REPORT_ONLY) {
-					returningTagsToProxy = clientThrottledTags.size() > 0;
-					reply.clientThrottledTags = std::move(clientThrottledTags);
-				}
-			}
+			auto clientThrottledTags = tagThrottler->getClientRates();
+			bool returningTagsToProxy = !clientThrottledTags.empty();
+			reply.clientThrottledTags = std::move(clientThrottledTags);
 			CODE_PROBE(returningTagsToProxy, "Returning tag throttles to a proxy");
 		}
 
@@ -592,8 +583,7 @@ Ratekeeper::Ratekeeper(UID id, Database db)
                                                                     SERVER_KNOBS->TARGET_BYTES_PER_TLOG,
                                                                     SERVER_KNOBS->SPRING_BYTES_TLOG,
                                                                     SERVER_KNOBS->MAX_TL_SS_VERSION_DIFFERENCE,
-                                                                    SERVER_KNOBS->TARGET_DURABILITY_LAG_VERSIONS,
-                                                                    SERVER_KNOBS->TARGET_BW_LAG),
+                                                                    SERVER_KNOBS->TARGET_DURABILITY_LAG_VERSIONS),
     batchLimits(TransactionPriority::BATCH,
                 "Batch",
                 SERVER_KNOBS->TARGET_BYTES_PER_STORAGE_SERVER_BATCH,
@@ -601,15 +591,9 @@ Ratekeeper::Ratekeeper(UID id, Database db)
                 SERVER_KNOBS->TARGET_BYTES_PER_TLOG_BATCH,
                 SERVER_KNOBS->SPRING_BYTES_TLOG_BATCH,
                 SERVER_KNOBS->MAX_TL_SS_VERSION_DIFFERENCE_BATCH,
-                SERVER_KNOBS->TARGET_DURABILITY_LAG_VERSIONS_BATCH,
-                SERVER_KNOBS->TARGET_BW_LAG_BATCH),
-    maxVersion(0), blobWorkerTime(now()), unblockedAssignmentTime(now()), anyBlobRanges(false) {
-	if (SERVER_KNOBS->GLOBAL_TAG_THROTTLING) {
-		tagThrottler = std::make_unique<GlobalTagThrottler>(
-		    db, id, SERVER_KNOBS->MAX_MACHINES_FALLING_BEHIND, SERVER_KNOBS->GLOBAL_TAG_THROTTLING_LIMITING_THRESHOLD);
-	} else {
-		tagThrottler = std::make_unique<TagThrottler>(db, id);
-	}
+                SERVER_KNOBS->TARGET_DURABILITY_LAG_VERSIONS_BATCH),
+    maxVersion(0), unblockedAssignmentTime(now()) {
+	tagThrottler = std::make_unique<TagThrottler>(db, id);
 }
 
 void Ratekeeper::updateCommitCostEstimation(
@@ -636,7 +620,7 @@ static std::string getIgnoredZonesReasons(
 		}
 		ignoredZoneReasons += "] ";
 	}
-	return ignoredZoneReasons.length() ? ignoredZoneReasons : "None";
+	return !ignoredZoneReasons.empty() ? ignoredZoneReasons : "None";
 }
 
 void Ratekeeper::updateRate(RatekeeperLimits* limits) {
@@ -937,16 +921,31 @@ void Ratekeeper::updateRate(RatekeeperLimits* limits) {
 
 		limitReason_t tlogLimitReason = limitReason_t::log_server_write_queue;
 
-		int64_t minFreeSpace = std::max(SERVER_KNOBS->MIN_AVAILABLE_SPACE,
-		                                (int64_t)(SERVER_KNOBS->MIN_AVAILABLE_SPACE_RATIO * tl.getSmoothTotalSpace()));
+		const auto smoothTotalSpace = tl.getSmoothTotalSpace();
+		const auto smoothFreeSpace = tl.getSmoothFreeSpace();
+		const auto minFreeSpaceByRatio =
+		    static_cast<int64_t>(SERVER_KNOBS->MIN_AVAILABLE_SPACE_RATIO * smoothTotalSpace);
+		const auto minFreeSpace = std::max(SERVER_KNOBS->MIN_AVAILABLE_SPACE, minFreeSpaceByRatio);
+		// Start shrinking the tlog queue budget once available space drops below the configured ratio,
+		// then ramp down linearly until reaching minFreeSpace.
+		const auto throttleStartSpaceByRatio =
+		    static_cast<int64_t>(SERVER_KNOBS->TLOG_THROTTLE_START_AVAILABLE_SPACE_RATIO * smoothTotalSpace);
+		const auto throttleStartSpace = std::max(minFreeSpace + 1, throttleStartSpaceByRatio);
+		const auto availableAboveMin = smoothFreeSpace - minFreeSpace;
+		const auto availableAboveMinBytes = static_cast<int64_t>(availableAboveMin);
+		const auto throttleWindow = static_cast<double>(throttleStartSpace - minFreeSpace);
+		const auto diskBudgetRatio = std::clamp(availableAboveMin / throttleWindow, 0.0, 1.0);
 
-		worstFreeSpaceTLog =
-		    std::min(worstFreeSpaceTLog, std::max((int64_t)tl.getSmoothFreeSpace() - minFreeSpace, (int64_t)0));
+		worstFreeSpaceTLog = std::min(worstFreeSpaceTLog, std::max(availableAboveMinBytes, int64_t{ 0 }));
 
-		int64_t springBytes = std::max<int64_t>(
-		    1, std::min<int64_t>(limits->logSpringBytes, (tl.getSmoothFreeSpace() - minFreeSpace) * 0.2));
-		int64_t targetBytes =
-		    std::max<int64_t>(1, std::min(limits->logTargetBytes, (int64_t)tl.getSmoothFreeSpace() - minFreeSpace));
+		const auto scaledSpringBytes = static_cast<int64_t>(limits->logSpringBytes * diskBudgetRatio);
+		const auto springBytes =
+		    std::max(int64_t{ 1 }, std::min(std::max(int64_t{ 1 }, scaledSpringBytes), availableAboveMinBytes));
+		const auto scaledTargetBytes = static_cast<int64_t>(limits->logTargetBytes * diskBudgetRatio);
+		const auto targetBytes =
+		    std::max(int64_t{ 1 }, std::min(std::max(int64_t{ 1 }, scaledTargetBytes), availableAboveMinBytes));
+
+		CODE_PROBE(diskBudgetRatio < 1.0, "Ratekeeper tlog disk budget ratio below one");
 		if (targetBytes != limits->logTargetBytes) {
 			if (minFreeSpace == SERVER_KNOBS->MIN_AVAILABLE_SPACE) {
 				tlogLimitReason = limitReason_t::log_server_min_free_space;
@@ -957,9 +956,11 @@ void Ratekeeper::updateRate(RatekeeperLimits* limits) {
 				TraceEvent("RatekeeperLimitReasonDetails")
 				    .detail("TLogID", tl.id)
 				    .detail("Reason", tlogLimitReason)
-				    .detail("TLSmoothFreeSpace", tl.getSmoothFreeSpace())
-				    .detail("TLSmoothTotalSpace", tl.getSmoothTotalSpace())
+				    .detail("TLSmoothFreeSpace", smoothFreeSpace)
+				    .detail("TLSmoothTotalSpace", smoothTotalSpace)
 				    .detail("LimitsLogTargetBytes", limits->logTargetBytes)
+				    .detail("ThrottleStartSpace", throttleStartSpace)
+				    .detail("DiskBudgetRatio", diskBudgetRatio)
 				    .detail("TargetBytes", targetBytes)
 				    .detail("MinFreeSpace", minFreeSpace);
 			}
@@ -1223,7 +1224,7 @@ UpdateCommitCostRequest StorageQueueInfo::refreshCommitCost(double elapsed) {
 	}
 
 	while (!topKWriters.empty()) {
-		busiestWriteTags.push_back(std::move(topKWriters.top()));
+		busiestWriteTags.push_back(topKWriters.top());
 		topKWriters.pop();
 	}
 
@@ -1268,7 +1269,7 @@ TLogQueueInfo::TLogQueueInfo(UID id)
 
 void TLogQueueInfo::update(TLogQueuingMetricsReply const& reply, Smoother& smoothTotalDurableBytes) {
 	valid = true;
-	auto prevReply = std::move(lastReply);
+	auto prevReply = lastReply;
 	lastReply = reply;
 	if (prevReply.instanceID != reply.instanceID) {
 		smoothDurableBytes.reset(reply.bytesDurable);

@@ -23,14 +23,13 @@
 #include "fdbserver/core/TesterInterface.h"
 #include "flow/DeterministicRandom.h"
 #include "fdbserver/tester/workloads.h"
-#include "flow/actorcompiler.h" // This must be the last #include.
 
 struct WatchesSameKeyWorkload : TestWorkload {
 	static constexpr auto NAME = "WatchesSameKeyCorrectness";
 	int numWatches;
 	std::vector<Future<Void>> cases;
 
-	WatchesSameKeyWorkload(WorkloadContext const& wcx) : TestWorkload(wcx) {
+	explicit WatchesSameKeyWorkload(WorkloadContext const& wcx) : TestWorkload(wcx) {
 		numWatches = getOption(options, "numWatches"_sr, 3);
 	}
 

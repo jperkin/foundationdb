@@ -58,7 +58,7 @@ struct WriteDuringReadWorkload : TestWorkload {
 	bool useExtraDB;
 	double zeroPaddingRatio;
 
-	WriteDuringReadWorkload(WorkloadContext const& wcx)
+	explicit WriteDuringReadWorkload(WorkloadContext const& wcx)
 	  : TestWorkload(wcx), transactions("Transactions"), retries("Retries"), success(true) {
 		testDuration = getOption(options, "testDuration"_sr, 60.0);
 		slowModeStart = getOption(options, "slowModeStart"_sr, 1000.0);
@@ -91,10 +91,10 @@ struct WriteDuringReadWorkload : TestWorkload {
 		CODE_PROBE(adjacentKeys && (nodes + minNode) > CLIENT_KNOBS->KEY_SIZE_LIMIT,
 		           "WriteDuringReadWorkload testing large keys");
 
-		useExtraDB = g_network->isSimulated() && !g_simulator->extraDatabases.empty();
+		useExtraDB = g_network->isSimulated() && !fdbSimulationPolicyState().extraDatabases.empty();
 		if (useExtraDB) {
-			ASSERT(g_simulator->extraDatabases.size() == 1);
-			extraDB = Database::createSimulatedExtraDatabase(g_simulator->extraDatabases[0]);
+			ASSERT(fdbSimulationPolicyState().extraDatabases.size() == 1);
+			extraDB = Database::createSimulatedExtraDatabase(fdbSimulationPolicyState().extraDatabases[0]);
 			useSystemKeys = false;
 		}
 
@@ -330,7 +330,7 @@ struct WriteDuringReadWorkload : TestWorkload {
 				}
 			} else {
 				if (res.size() > memRes.size() || (res.size() < memRes.size() && !res.more) ||
-				    (res.size() == 0 && res.more && !resized)) {
+				    (res.empty() && res.more && !resized)) {
 					TraceEvent(SevError, "WDRGetRangeWrongResult", randomID)
 					    .detail("BeginKey", begin.getKey())
 					    .detail("BeginOffset", begin.offset)
@@ -797,19 +797,19 @@ struct WriteDuringReadWorkload : TestWorkload {
 		int waitLocation = 0;
 		double startTime = now();
 
-		bool disableGetKey = BUGGIFY;
-		bool disableGetRange = BUGGIFY;
-		bool disableGet = BUGGIFY;
-		bool disableCommit = BUGGIFY;
-		bool disableClearRange = BUGGIFY;
-		bool disableClear = BUGGIFY;
-		bool disableWatch = BUGGIFY;
-		bool disableWriteConflictRange = BUGGIFY;
-		bool disableDelay = BUGGIFY;
-		bool disableReset = BUGGIFY;
-		bool disableReadConflictRange = BUGGIFY;
-		bool disableSet = BUGGIFY;
-		bool disableAtomicOp = BUGGIFY;
+		bool disableGetKey = buggify();
+		bool disableGetRange = buggify();
+		bool disableGet = buggify();
+		bool disableCommit = buggify();
+		bool disableClearRange = buggify();
+		bool disableClear = buggify();
+		bool disableWatch = buggify();
+		bool disableWriteConflictRange = buggify();
+		bool disableDelay = buggify();
+		bool disableReset = buggify();
+		bool disableReadConflictRange = buggify();
+		bool disableSet = buggify();
+		bool disableAtomicOp = buggify();
 
 		Key timebombStr = makeString(8);
 		uint8_t* data = mutateString(timebombStr);

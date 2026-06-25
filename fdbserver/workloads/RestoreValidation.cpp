@@ -42,7 +42,6 @@
 #include "fdbclient/ManagementAPI.h"
 #include "fdbclient/NativeAPI.actor.h"
 #include "fdbserver/tester/workloads.h"
-#include "flow/actorcompiler.h" // This must be the last #include.
 
 struct RestoreValidationWorkload : TestWorkload {
 	static constexpr auto NAME = "RestoreValidation";
@@ -54,7 +53,7 @@ struct RestoreValidationWorkload : TestWorkload {
 	double checkInterval;
 	double maxWaitTime;
 
-	RestoreValidationWorkload(WorkloadContext const& wcx) : TestWorkload(wcx) {
+	explicit RestoreValidationWorkload(WorkloadContext const& wcx) : TestWorkload(wcx) {
 		validateAfter = getOption(options, "validateAfter"_sr, 50.0);
 		validationRange = normalKeys;
 		expectedPhase = getOption(options, "expectedPhase"_sr, (int)AuditPhase::Complete);

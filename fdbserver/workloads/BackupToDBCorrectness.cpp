@@ -54,7 +54,7 @@ struct BackupToDBCorrectnessWorkload : TestWorkload {
 		out.insert({ "RandomRangeLock" });
 	}
 
-	BackupToDBCorrectnessWorkload(WorkloadContext const& wcx) : TestWorkload(wcx) {
+	explicit BackupToDBCorrectnessWorkload(WorkloadContext const& wcx) : TestWorkload(wcx) {
 		locked.set(sharedRandomNumber % 2);
 		backupAfter = getOption(options, "backupAfter"_sr, 10.0);
 		double minBackupAfter = getOption(options, "minBackupAfter"_sr, backupAfter);
@@ -102,7 +102,7 @@ struct BackupToDBCorrectnessWorkload : TestWorkload {
 				backupPrefix = backupPrefix.withPrefix("\x00\x00\00"_sr);
 			}
 
-			ASSERT(backupPrefix != StringRef());
+			ASSERT(!backupPrefix.empty());
 		}
 
 		KeyRef beginRange;
@@ -147,8 +147,8 @@ struct BackupToDBCorrectnessWorkload : TestWorkload {
 			}
 		}
 
-		ASSERT(g_simulator->extraDatabases.size() == 1);
-		extraDB = Database::createSimulatedExtraDatabase(g_simulator->extraDatabases[0]);
+		ASSERT(fdbSimulationPolicyState().extraDatabases.size() == 1);
+		extraDB = Database::createSimulatedExtraDatabase(fdbSimulationPolicyState().extraDatabases[0]);
 
 		TraceEvent("BARW_Start").detail("Locked", locked);
 	}
@@ -161,7 +161,7 @@ struct BackupToDBCorrectnessWorkload : TestWorkload {
 	}
 
 	Future<Void> _setup(Database cx, BackupToDBCorrectnessWorkload* self) {
-		if (BUGGIFY) {
+		if (buggify()) {
 			for (auto r : getSystemBackupRanges()) {
 				self->backupRanges.push_back_deep(self->backupRanges.arena(), r);
 			}
@@ -195,7 +195,7 @@ struct BackupToDBCorrectnessWorkload : TestWorkload {
 				co_await waitForAll(results);
 
 				std::vector<RangeResult> ret;
-				for (auto result : results) {
+				for (const auto& result : results) {
 					ret.push_back(result.get());
 				}
 				co_return ret;
@@ -302,7 +302,7 @@ struct BackupToDBCorrectnessWorkload : TestWorkload {
 		Future<Void> stopDifferentialFuture = delay(stopDifferentialDelay);
 		co_await delay(startDelay);
 
-		if (startDelay || BUGGIFY) {
+		if (startDelay || buggify()) {
 			TraceEvent("BARW_DoBackupAbortBackup1", randomID)
 			    .detail("Tag", printable(tag))
 			    .detail("StartDelay", startDelay);
@@ -368,7 +368,7 @@ struct BackupToDBCorrectnessWorkload : TestWorkload {
 
 			bool aborted = false;
 			try {
-				if (BUGGIFY) {
+				if (buggify()) {
 					TraceEvent("BARW_DoBackupWaitForRestorable", randomID).detail("Tag", printable(tag));
 					// Wait until the backup is in a restorable state
 					EBackupState resultWait = co_await backupAgent->waitBackup(cx, tag, StopWhenDone::False);
@@ -491,7 +491,7 @@ struct BackupToDBCorrectnessWorkload : TestWorkload {
 				    co_await tr->getRange(KeyRange(KeyRangeRef(backupAgentKey, strinc(backupAgentKey))), 100);
 
 				// Error if the system keyspace for the backup tag is not empty
-				if (agentValues.size() > 0) {
+				if (!agentValues.empty()) {
 					displaySystemKeys++;
 					printf("BackupCorrectnessLeftoverMutationKeys: (%d) %s\n",
 					       agentValues.size(),
@@ -524,12 +524,12 @@ struct BackupToDBCorrectnessWorkload : TestWorkload {
 
 				RangeResult versions = co_await tr->getRange(
 				    KeyRange(KeyRangeRef(backupLatestVersionsPath, strinc(backupLatestVersionsPath))), 1);
-				if (!shareLogRange || !versions.size()) {
+				if (!shareLogRange || versions.empty()) {
 					RangeResult logValues = co_await tr->getRange(
 					    KeyRange(KeyRangeRef(backupLogValuesKey, strinc(backupLogValuesKey))), 100);
 
 					// Error if the log/mutation keyspace for the backup tag is not empty
-					if (logValues.size() > 0) {
+					if (!logValues.empty()) {
 						displaySystemKeys++;
 						printf("BackupCorrectnessLeftoverLogKeys: (%d) %s\n",
 						       logValues.size(),
@@ -620,7 +620,7 @@ struct BackupToDBCorrectnessWorkload : TestWorkload {
 			UID logUid = co_await backupAgent.getLogUid(extraDB, backupTag);
 
 			// Occasionally start yet another backup that might still be running when we restore
-			if (!locked && extraPrefix != backupPrefix && BUGGIFY) {
+			if (!locked && extraPrefix != backupPrefix && buggify()) {
 				TraceEvent("BARW_SubmitBackup2", randomID).detail("Tag", printable(backupTag));
 				try {
 					extraBackup = backupAgent.submitBackup(extraDB,
@@ -775,9 +775,9 @@ struct BackupToDBCorrectnessWorkload : TestWorkload {
 			}
 
 			// SOMEDAY: Remove after backup agents can exist quiescently
-			if ((g_simulator->drAgents == ISimulator::BackupAgentType::BackupToDB) &&
+			if ((fdbSimulationPolicyState().drAgents == FDBBackupAgentType::BackupToDB) &&
 			    (!BackupToDBCorrectnessWorkload::drAgentRequests)) {
-				g_simulator->drAgents = ISimulator::BackupAgentType::NoBackupAgents;
+				fdbSimulationPolicyState().drAgents = FDBBackupAgentType::NoBackupAgents;
 			}
 		} catch (Error& e) {
 			TraceEvent(SevError, "BackupAndRestoreCorrectness").error(e);

@@ -27,7 +27,8 @@
 #include "fdbserver/core/BackupProgress.h"
 #include "fdbserver/core/Knobs.h"
 #include "fdbserver/core/LogProtocolMessage.h"
-#include "fdbserver/core/LogSystem.h"
+#include "fdbserver/logsystem/LogSystem.h"
+#include "fdbserver/logsystem/LogSystemConsumer.h"
 #include "fdbserver/logsystem/LogSystemFactory.h"
 #include "fdbserver/core/ServerDBInfo.h"
 #include "fdbserver/core/WaitFailure.h"
@@ -46,12 +47,10 @@ struct VersionedMessage {
 	StringRef message;
 	VectorRef<Tag> tags;
 	Arena arena; // Keep a reference to the memory containing the message
-	Arena decryptArena; // Arena used for decrypt buffer.
 
 	VersionedMessage(LogMessageVersion v, StringRef m, const VectorRef<Tag>& t, const Arena& a)
 	  : version(v), message(m), tags(t), arena(a) {}
 	Version getVersion() const { return version.version; }
-	uint32_t getSubVersion() const { return version.sub; }
 	// Returns the estimated size of the message in bytes, assuming 6 tags.
 	size_t getEstimatedSize() const { return message.size() + TagsAndMessage::getHeaderSize(6); }
 
@@ -113,8 +112,7 @@ struct BackupData {
 	LogEpoch oldestBackupEpoch = 0; // oldest epoch that still has data on tLogs for backup to pull
 	Version minKnownCommittedVersion;
 	Version savedVersion; // Largest version saved to blob storage
-	Reference<AsyncVar<ServerDBInfo> const> db;
-	AsyncVar<Reference<ILogSystem>> logSystem;
+	AsyncVar<Reference<LogSystemConsumer>> logSystem;
 	Database cx;
 	std::vector<VersionedMessage> messages;
 	NotifiedVersion pulledVersion;
@@ -192,7 +190,7 @@ struct BackupData {
 							TraceEvent("BackupWorkerDetectAbortedJob", self->myId).detail("BackupID", uid);
 							co_return;
 						}
-						ASSERT(workers.present() && workers.get().size() > 0);
+						ASSERT(workers.present() && !workers.get().empty());
 						auto& v = workers.get();
 						v.erase(std::remove_if(v.begin(),
 						                       v.end(),
@@ -211,7 +209,7 @@ struct BackupData {
 							// monitor all workers' updates
 							watchFuture = tr->watch(config.startedBackupWorkers().key);
 						}
-						ASSERT(workers.present() && workers.get().size() > 0);
+						ASSERT(workers.present() && !workers.get().empty());
 						if (!updated) {
 							config.startedBackupWorkers().set(tr, workers.get());
 						}
@@ -230,7 +228,7 @@ struct BackupData {
 						tr->reset();
 						continue;
 					} else {
-						ASSERT(workers.present() && workers.get().size() > 0);
+						ASSERT(workers.present() && !workers.get().empty());
 						config.startedBackupWorkers().set(tr, workers.get());
 						co_await tr->commit();
 						break;
@@ -265,10 +263,10 @@ struct BackupData {
 	Future<Void> logger;
 
 	explicit BackupData(UID id, Reference<AsyncVar<ServerDBInfo> const> db, const InitializeBackupRequest& req)
-	  : myId(id), tag(req.routerTag), totalTags(req.totalTags), startVersion(req.startVersion),
-	    endVersion(req.endVersion), recruitedEpoch(req.recruitedEpoch), backupEpoch(req.backupEpoch),
-	    minKnownCommittedVersion(invalidVersion), savedVersion(req.startVersion - 1), db(db), pulledVersion(0),
-	    paused(false), lock(new FlowLock(SERVER_KNOBS->BACKUP_WORKER_LOCK_BYTES)), cc("BackupWorker", myId.toString()) {
+	  : myId(id), tag(req.tag), totalTags(req.totalTags), startVersion(req.startVersion), endVersion(req.endVersion),
+	    recruitedEpoch(req.recruitedEpoch), backupEpoch(req.backupEpoch), minKnownCommittedVersion(invalidVersion),
+	    savedVersion(req.startVersion - 1), pulledVersion(0), paused(false),
+	    lock(new FlowLock(SERVER_KNOBS->BACKUP_WORKER_LOCK_BYTES)), cc("BackupWorker", myId.toString()) {
 		cx = openDBOnServer(db, TaskPriority::DefaultEndpoint, LockAware::True);
 
 		specialCounter(cc, "SavedVersion", [this]() { return this->savedVersion; });
@@ -381,7 +379,7 @@ struct BackupData {
 	// to start new backups and stop ones not in the active state.
 	void onBackupChanges(const std::vector<std::pair<UID, Version>>& uidVersions) {
 		std::set<UID> stopList;
-		for (auto it : backups) {
+		for (const auto& it : backups) {
 			stopList.insert(it.first);
 		}
 
@@ -908,7 +906,7 @@ Future<Void> uploadData(BackupData* self) {
 // Pulls data from TLog servers using LogRouter tag.
 Future<Void> pullAsyncData(BackupData* self) {
 	Future<Void> logSystemChange = Void();
-	Reference<ILogSystem::IPeekCursor> r;
+	Reference<IPeekCursor> r;
 
 	Version tagAt = std::max({ self->pulledVersion.get(), self->startVersion, self->savedVersion });
 
@@ -937,7 +935,7 @@ Future<Void> pullAsyncData(BackupData* self) {
 					r = self->logSystem.get()->peekLogRouter(
 					    self->myId, tagAt, self->tag, SERVER_KNOBS->LOG_ROUTER_PEEK_FROM_SATELLITES_PREFERRED);
 				} else {
-					r = Reference<ILogSystem::IPeekCursor>();
+					r = Reference<IPeekCursor>();
 				}
 				logSystemChange = self->logSystem.onChange();
 			}
@@ -1053,7 +1051,7 @@ Future<Void> backupWorker(BackupInterface interf,
 	Error err;
 
 	TraceEvent("BackupWorkerStart", self.myId)
-	    .detail("Tag", req.routerTag.toString())
+	    .detail("Tag", req.tag.toString())
 	    .detail("TotalTags", req.totalTags)
 	    .detail("StartVersion", req.startVersion)
 	    .detail("EndVersion", req.endVersion.present() ? req.endVersion.get() : -1)
@@ -1062,7 +1060,7 @@ Future<Void> backupWorker(BackupInterface interf,
 	try {
 		addActor.send(checkRemoved(db, req.recruitedEpoch, &self));
 		addActor.send(waitFailureServer(interf.waitFailure.getFuture()));
-		if (req.recruitedEpoch == req.backupEpoch && req.routerTag.id == 0) {
+		if (req.recruitedEpoch == req.backupEpoch && req.tag.id == 0) {
 			addActor.send(monitorBackupProgress(&self));
 		}
 		addActor.send(monitorWorkerPause(&self));
@@ -1082,10 +1080,10 @@ Future<Void> backupWorker(BackupInterface interf,
 			auto res = co_await race(dbInfoChange, done, error);
 			if (res.index() == 0) {
 				dbInfoChange = db->onChange();
-				Reference<ILogSystem> ls = makeLogSystemFromServerDBInfo(self.myId, db->get(), true);
+				Reference<LogSystem> ls = makeLogSystemFromServerDBInfo(self.myId, db->get(), true);
 				bool hasPseudoLocality = ls.isValid() && ls->hasPseudoLocality(tagLocalityBackup);
 				if (hasPseudoLocality) {
-					self.logSystem.set(ls);
+					self.logSystem.set(ls->makeConsumer());
 					self.oldestBackupEpoch = std::max(self.oldestBackupEpoch, ls->getOldestBackupEpoch());
 				}
 				TraceEvent("BackupWorkerLogSystem", self.myId)

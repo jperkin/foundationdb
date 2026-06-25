@@ -88,7 +88,7 @@ There are roughly 4 class of movement priorities
 * Boundary change priority. The movement will change current shard boundaries.
 * Others. Like resuming a in-flight movement.
 
-Each shard movement has a priority associating with the move attempt,  The explanation of each priority knob (`PRIORITY_<XXX>`) is in `ServerKnobs.h`.
+Each shard movement has a priority associating with the move attempt,  The explanation of each priority knob (`PRIORITY_<XXX>`) is in `Knobs.h`.
 
 In `status json` output, please look at field `.data.team_tracker.state` for team priority state.
 
@@ -717,6 +717,9 @@ Maps each shard's start key to its current source servers (who own the data) and
 servers (who are receiving the data during a move). When no move is in progress, `dest` is
 empty. The encoding supports both UID-based and Tag-based formats, plus optional shard IDs
 when `SHARD_ENCODE_LOCATION_METADATA` is enabled.
+
+See [shard-encode-location-metadata.md](shard-encode-location-metadata.md) for full
+feature description including encoding details, rollout/rollback, and SS behavior.
 
 Key encoding/decoding functions in [`SystemData.cpp`](https://github.com/apple/foundationdb/blob/release-7.3/fdbclient/SystemData.cpp):
 - `keyServersKey(k)` -- constructs the key

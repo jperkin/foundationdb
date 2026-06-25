@@ -34,8 +34,6 @@ namespace fdb_cli {
 
 constexpr char msgTypeKey[] = "type";
 constexpr char msgClusterKey[] = "cluster";
-constexpr char msgClusterTypeKey[] = "cluster_type";
-constexpr char msgDataClustersKey[] = "data_clusters";
 constexpr char msgCapacityKey[] = "capacity";
 constexpr char msgAllocatedKey[] = "allocated";
 constexpr char msgErrorKey[] = "error";
@@ -71,7 +69,7 @@ struct CommandFactory {
 			hintGenerators()[name] = hintFunc;
 		}
 	}
-	CommandFactory(const char* name) { hiddenCommands().insert(name); }
+	explicit CommandFactory(const char* name) { hiddenCommands().insert(name); }
 	static std::map<std::string, CommandHelp>& commands() {
 		static std::map<std::string, CommandHelp> helpMap;
 		return helpMap;
@@ -276,10 +274,14 @@ Future<UID> auditStorageCommandActor(Reference<IClusterConnectionRecord> cluster
 Future<bool> getAuditStatusCommandActor(Database cx, std::vector<StringRef> tokens);
 // Retrieve shard information command
 Future<bool> locationMetadataCommandActor(Database cx, std::vector<StringRef> tokens);
+// Check metadata encoding format (old vs shard-encoded)
+Future<bool> checkMetadataEncodingCommandActor(Database cx, std::vector<StringRef> tokens);
 // Bulk loading command
 Future<UID> bulkLoadCommandActor(Database cx, std::vector<StringRef> tokens);
 // Bulk dumping command
 Future<UID> bulkDumpCommandActor(Database cx, std::vector<StringRef> tokens);
+// Range lock management command
+Future<bool> rangeLockCommandActor(Database cx, std::vector<StringRef> tokens);
 // force_recovery_with_data_loss command
 Future<bool> forceRecoveryWithDataLossCommandActor(Reference<IDatabase> db, std::vector<StringRef> const& tokens);
 // include command
@@ -293,8 +295,6 @@ Future<bool> killCommandActor(Reference<IDatabase> db,
 Future<bool> lockCommandActor(Reference<IDatabase> db, std::vector<StringRef> const& tokens);
 Future<bool> unlockDatabaseActor(Reference<IDatabase> db, UID uid);
 
-// blobrestore command
-Future<bool> blobRestoreCommandActor(Database localDb, std::vector<StringRef> tokens);
 // hotrange command
 Future<bool> hotRangeCommandActor(Database localDb,
                                   Reference<IDatabase> db,
@@ -309,8 +309,6 @@ Future<bool> clearHealthyZone(Reference<IDatabase> db,
 Future<bool> maintenanceCommandActor(Reference<IDatabase> db, std::vector<StringRef> tokens);
 // profile command
 Future<bool> profileCommandActor(Database db, Reference<ITransaction> tr, std::vector<StringRef> tokens, bool intrans);
-// quota command
-Future<bool> quotaCommandActor(Reference<IDatabase> db, std::vector<StringRef> tokens);
 // setclass command
 Future<bool> setClassCommandActor(Reference<IDatabase> db, std::vector<StringRef> tokens);
 // snapshot command

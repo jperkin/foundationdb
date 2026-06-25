@@ -33,7 +33,7 @@
 #include "flow/Error.h"
 #include "flow/Hostname.h"
 #include "flow/Util.h"
-#include "flow/rte_memcpy.h"
+#include "rte_memcpy.h"
 #include "flow/UnitTest.h"
 
 #ifdef WITH_FOLLY_MEMCPY
@@ -108,9 +108,9 @@ Reference<IRandom> seededDebugRandom;
 uint64_t debug_lastLoadBalanceResultEndpointToken = 0;
 bool noUnseed = false;
 
-void setThreadLocalDeterministicRandomSeed(uint32_t seed) {
-	seededRandom = Reference<IRandom>(new DeterministicRandom(seed, true));
-	seededDebugRandom = Reference<IRandom>(new DeterministicRandom(seed));
+void setThreadLocalDeterministicRandomSeed(uint64_t seed) {
+	seededRandom = makeReference<DeterministicRandom>(seed, true);
+	seededDebugRandom = makeReference<DeterministicRandom>(seed);
 }
 
 Reference<IRandom> debugRandom() {
@@ -119,7 +119,7 @@ Reference<IRandom> debugRandom() {
 
 Reference<IRandom> deterministicRandom() {
 	if (!seededRandom) {
-		seededRandom = Reference<IRandom>(new DeterministicRandom(platform::getRandomSeed(), true));
+		seededRandom = makeReference<DeterministicRandom>(platform::getRandomSeed(), true);
 	}
 	return seededRandom;
 }
@@ -127,7 +127,7 @@ Reference<IRandom> deterministicRandom() {
 Reference<IRandom> nondeterministicRandom() {
 	static thread_local Reference<IRandom> random;
 	if (!random) {
-		random = Reference<IRandom>(new DeterministicRandom(platform::getRandomSeed()));
+		random = makeReference<DeterministicRandom>(platform::getRandomSeed());
 	}
 	return random;
 }
@@ -448,7 +448,7 @@ struct Int {
 	constexpr static FileIdentifier file_identifier = 12345;
 	uint32_t value;
 	Int() = default;
-	Int(uint32_t value) : value(value) {}
+	explicit Int(uint32_t value) : value(value) {}
 	template <class Ar>
 	void serialize(Ar& ar) {
 		serializer(ar, value);

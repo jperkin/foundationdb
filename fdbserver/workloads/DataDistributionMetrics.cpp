@@ -24,7 +24,6 @@
 #include "fdbclient/ReadYourWrites.h"
 #include "fdbclient/Schemas.h"
 #include "fdbserver/tester/workloads.h"
-#include "flow/actorcompiler.h" // This must be the last include
 
 struct DataDistributionMetricsWorkload : KVWorkload {
 	static constexpr auto NAME = "DataDistributionMetrics";
@@ -36,7 +35,7 @@ struct DataDistributionMetricsWorkload : KVWorkload {
 	PerfIntCounter commits, errors;
 	double delayPerLoop;
 
-	DataDistributionMetricsWorkload(WorkloadContext const& wcx)
+	explicit DataDistributionMetricsWorkload(WorkloadContext const& wcx)
 	  : KVWorkload(wcx), numShards(0), avgBytes(0), commits("Commits"), errors("Errors") {
 		testDuration = getOption(options, "testDuration"_sr, 10.0);
 		// transaction time out duration(ms)

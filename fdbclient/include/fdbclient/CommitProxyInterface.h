@@ -50,7 +50,6 @@ struct CommitProxyInterface {
 	RequestStream<ReplyPromise<Void>> waitFailure;
 
 	RequestStream<struct TxnStateRequest> txnState;
-	RequestStream<struct GetHealthMetricsRequest> getHealthMetrics;
 	RequestStream<struct ProxySnapRequest> proxySnapReq;
 	RequestStream<struct ExclusionSafetyCheckRequest> exclusionSafetyCheckReq;
 	RequestStream<struct GetDDMetricsRequest> getDDMetrics;
@@ -76,16 +75,14 @@ struct CommitProxyInterface {
 			    RequestStream<struct GetStorageServerRejoinInfoRequest>(commit.getEndpoint().getAdjustedEndpoint(3));
 			waitFailure = RequestStream<ReplyPromise<Void>>(commit.getEndpoint().getAdjustedEndpoint(4));
 			txnState = RequestStream<struct TxnStateRequest>(commit.getEndpoint().getAdjustedEndpoint(5));
-			getHealthMetrics =
-			    RequestStream<struct GetHealthMetricsRequest>(commit.getEndpoint().getAdjustedEndpoint(6));
-			proxySnapReq = RequestStream<struct ProxySnapRequest>(commit.getEndpoint().getAdjustedEndpoint(7));
+			proxySnapReq = RequestStream<struct ProxySnapRequest>(commit.getEndpoint().getAdjustedEndpoint(6));
 			exclusionSafetyCheckReq =
-			    RequestStream<struct ExclusionSafetyCheckRequest>(commit.getEndpoint().getAdjustedEndpoint(8));
-			getDDMetrics = RequestStream<struct GetDDMetricsRequest>(commit.getEndpoint().getAdjustedEndpoint(9));
+			    RequestStream<struct ExclusionSafetyCheckRequest>(commit.getEndpoint().getAdjustedEndpoint(7));
+			getDDMetrics = RequestStream<struct GetDDMetricsRequest>(commit.getEndpoint().getAdjustedEndpoint(8));
 			expireIdempotencyId =
-			    PublicRequestStream<struct ExpireIdempotencyIdRequest>(commit.getEndpoint().getAdjustedEndpoint(10));
+			    PublicRequestStream<struct ExpireIdempotencyIdRequest>(commit.getEndpoint().getAdjustedEndpoint(9));
 			setThrottledShard =
-			    RequestStream<struct SetThrottledShardRequest>(commit.getEndpoint().getAdjustedEndpoint(13));
+			    RequestStream<struct SetThrottledShardRequest>(commit.getEndpoint().getAdjustedEndpoint(10));
 		}
 	}
 
@@ -98,7 +95,6 @@ struct CommitProxyInterface {
 		streams.push_back(getStorageServerRejoinInfo.getReceiver(TaskPriority::ProxyStorageRejoin));
 		streams.push_back(waitFailure.getReceiver());
 		streams.push_back(txnState.getReceiver());
-		streams.push_back(getHealthMetrics.getReceiver());
 		streams.push_back(proxySnapReq.getReceiver());
 		streams.push_back(exclusionSafetyCheckReq.getReceiver());
 		streams.push_back(getDDMetrics.getReceiver());
@@ -201,7 +197,7 @@ struct CommitTransactionRequest : TimedRequest {
 	bool verify() const { return true; }
 
 	CommitTransactionRequest() : CommitTransactionRequest(SpanContext()) {}
-	CommitTransactionRequest(SpanContext const& context) : spanContext(context), flags(0) {}
+	explicit CommitTransactionRequest(SpanContext const& context) : spanContext(context), flags(0) {}
 
 	template <class Ar>
 	void serialize(Ar& ar) {
@@ -363,46 +359,6 @@ struct TxnStateRequest {
 	}
 };
 
-struct GetHealthMetricsReply {
-	constexpr static FileIdentifier file_identifier = 11544290;
-	Standalone<StringRef> serialized;
-	HealthMetrics healthMetrics;
-
-	explicit GetHealthMetricsReply(const HealthMetrics& healthMetrics = HealthMetrics())
-	  : healthMetrics(healthMetrics) {
-		update(healthMetrics, true, true);
-	}
-
-	void update(const HealthMetrics& healthMetrics, bool detailedInput, bool detailedOutput) {
-		this->healthMetrics.update(healthMetrics, detailedInput, detailedOutput);
-		BinaryWriter bw(IncludeVersion());
-		bw << this->healthMetrics;
-		serialized = bw.toValue();
-	}
-
-	template <class Ar>
-	void serialize(Ar& ar) {
-		serializer(ar, serialized);
-		if (ar.isDeserializing) {
-			BinaryReader br(serialized, IncludeVersion());
-			br >> healthMetrics;
-		}
-	}
-};
-
-struct GetHealthMetricsRequest {
-	constexpr static FileIdentifier file_identifier = 11403900;
-	ReplyPromise<struct GetHealthMetricsReply> reply;
-	bool detailed;
-
-	explicit GetHealthMetricsRequest(bool detailed = false) : detailed(detailed) {}
-
-	template <class Ar>
-	void serialize(Ar& ar) {
-		serializer(ar, reply, detailed);
-	}
-};
-
 struct GetDDMetricsReply {
 	constexpr static FileIdentifier file_identifier = 7277713;
 	Standalone<VectorRef<DDMetricsRef>> storageMetricsList;
@@ -472,38 +428,6 @@ struct ExclusionSafetyCheckRequest {
 	template <class Ar>
 	void serialize(Ar& ar) {
 		serializer(ar, exclusions, reply);
-	}
-};
-
-struct GlobalConfigRefreshReply {
-	constexpr static FileIdentifier file_identifier = 12680327;
-	Arena arena;
-	Version version;
-	RangeResultRef result;
-
-	GlobalConfigRefreshReply() {}
-	GlobalConfigRefreshReply(Arena const& arena, Version version, RangeResultRef result)
-	  : arena(arena), version(version), result(result) {}
-
-	template <class Ar>
-	void serialize(Ar& ar) {
-		serializer(ar, result, version, arena);
-	}
-};
-
-struct GlobalConfigRefreshRequest {
-	constexpr static FileIdentifier file_identifier = 2828131;
-	Version lastKnown;
-	ReplyPromise<GlobalConfigRefreshReply> reply;
-
-	GlobalConfigRefreshRequest() {}
-	explicit GlobalConfigRefreshRequest(Version lastKnown) : lastKnown(lastKnown) {}
-
-	bool verify() const noexcept { return true; }
-
-	template <class Ar>
-	void serialize(Ar& ar) {
-		serializer(ar, lastKnown, reply);
 	}
 };
 

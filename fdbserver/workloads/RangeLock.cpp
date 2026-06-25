@@ -42,8 +42,8 @@ struct RangeLocking : TestWorkload {
 	struct KVOperation {
 		std::variant<KeyRange, KeyValue> params;
 
-		KVOperation(KeyRange range) : params(range) {}
-		KVOperation(KeyValue keyValue) : params(keyValue) {}
+		explicit KVOperation(KeyRange range) : params(range) {}
+		explicit KVOperation(KeyValue keyValue) : params(keyValue) {}
 
 		std::string toString() const {
 			std::string res = "KVOperation: ";
@@ -78,7 +78,7 @@ struct RangeLocking : TestWorkload {
 	std::vector<KVOperation> kvOperations;
 	std::map<Key, Value> kvs;
 
-	RangeLocking(WorkloadContext const& wcx) : TestWorkload(wcx), enabled(true), pass(true) {
+	explicit RangeLocking(WorkloadContext const& wcx) : TestWorkload(wcx), enabled(true), pass(true) {
 		lockedRangeMap.insert(allKeys, false);
 	}
 
@@ -272,7 +272,7 @@ struct RangeLocking : TestWorkload {
 			rangeToCheck = singleKeyRange(std::get<KeyValue>(kvOperation.params).key);
 		}
 		for (auto lockRange : self->lockedRangeMap.intersectingRanges(rangeToCheck)) {
-			if (lockRange.value() == true) {
+			if (lockRange.value()) {
 				return true;
 			}
 		}
@@ -353,7 +353,7 @@ struct RangeLocking : TestWorkload {
 	std::vector<KeyRange> getLockedRangesFromMemory(RangeLocking* self) {
 		std::vector<KeyRange> res;
 		for (auto range : self->lockedRangeMap.ranges()) {
-			if (range.value() == true) {
+			if (range.value()) {
 				res.push_back(range.range());
 			}
 		}

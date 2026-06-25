@@ -53,7 +53,6 @@ struct BulkDumping : TestWorkload {
 
 	// Timeout configuration
 	double jobCompletionTimeout = 1800.0; // Timeout for waiting on bulk dump/load job completion
-	double modeSetTimeout = 60.0; // Timeout for setBulkLoadMode/setBulkDumpMode operations
 	double jobSubmitTimeout = 60.0; // Timeout for submitBulkDumpJob/submitBulkLoadJob operations
 
 	// This workload is not compatible with following workload because they will race in changing the DD mode
@@ -71,7 +70,7 @@ struct BulkDumping : TestWorkload {
 		             "BulkLoading" });
 	}
 
-	BulkDumping(WorkloadContext const& wcx)
+	explicit BulkDumping(WorkloadContext const& wcx)
 	  : TestWorkload(wcx), enabled(true), pass(true), cancelTimes(0),
 	    maxCancelTimes(getOption(options, "maxCancelTimes"_sr, deterministicRandom()->randomInt(0, 2))),
 	    bulkLoadTransportMethod(
@@ -89,7 +88,6 @@ struct BulkDumping : TestWorkload {
 
 		// Initialize timeout options
 		jobCompletionTimeout = getOption(options, "jobCompletionTimeout"_sr, 1800.0);
-		modeSetTimeout = getOption(options, "modeSetTimeout"_sr, 60.0);
 		jobSubmitTimeout = getOption(options, "jobSubmitTimeout"_sr, 60.0);
 	}
 
@@ -494,16 +492,12 @@ struct BulkDumping : TestWorkload {
 		int oldBulkDumpMode = 0;
 		TraceEvent("BulkDumpingWorkLoad").detail("Phase", "Setting BulkDump Mode");
 		try {
-			oldBulkDumpMode = co_await timeoutError(setBulkDumpMode(cx, 1), modeSetTimeout); // Enable bulkDump
-			TraceEvent("BulkDumpingWorkLoad").detail("Phase", "BulkDump Mode Set").detail("OldMode", oldBulkDumpMode);
+			oldBulkDumpMode = co_await setBulkDumpMode(cx, 1); // Enable bulkDump
 		} catch (Error& e) {
-			if (e.code() == error_code_timed_out) {
-				TraceEvent(SevWarnAlways, "BulkDumpingWorkLoadSetDumpModeTimeout")
-				    .detail("TimeoutSeconds", modeSetTimeout);
-				throw;
-			}
+			TraceEvent(SevWarnAlways, "BulkDumpingWorkLoadSetDumpModeFailed").error(e);
 			throw;
 		}
+		TraceEvent("BulkDumpingWorkLoad").detail("Phase", "BulkDump Mode Set").detail("OldMode", oldBulkDumpMode);
 		std::string dumpFolder = jobRoot.empty() ? simulationBulkDumpFolder : jobRoot;
 		BulkDumpState bulkDumpJob =
 		    createBulkDumpJob(bulkDumpJobRange, dumpFolder, BulkLoadType::SST, bulkLoadTransportMethod);
@@ -529,17 +523,14 @@ struct BulkDumping : TestWorkload {
 		    .detail("Phase", "Setting BulkLoad Mode")
 		    .detail("Job", bulkDumpJob.toString());
 		try {
-			oldBulkLoadMode = co_await timeoutError(setBulkLoadMode(cx, 1), modeSetTimeout); // Enable bulkLoad
-			TraceEvent("BulkDumpingWorkLoad").detail("Phase", "BulkLoad Mode Set").detail("OldMode", oldBulkLoadMode);
+			oldBulkLoadMode = co_await setBulkLoadMode(cx, 1); // Enable bulkLoad
 		} catch (Error& e) {
-			if (e.code() == error_code_timed_out) {
-				TraceEvent(SevWarnAlways, "BulkDumpingWorkLoadSetModeTimeout")
-				    .detail("Job", bulkDumpJob.toString())
-				    .detail("TimeoutSeconds", modeSetTimeout);
-				throw;
-			}
+			TraceEvent(SevWarnAlways, "BulkDumpingWorkLoadSetLoadModeFailed")
+			    .error(e)
+			    .detail("Job", bulkDumpJob.toString());
 			throw;
 		}
+		TraceEvent("BulkDumpingWorkLoad").detail("Phase", "BulkLoad Mode Set").detail("OldMode", oldBulkLoadMode);
 		while (true) {
 			// We randomly injects the job cancellation when waiting for the job completion to test the job
 			// cancellation. If the job is cancelled, we should re-submit the job.
@@ -627,7 +618,7 @@ struct BulkDumping : TestWorkload {
 			if (useMockS3 && g_network->isSimulated()) {
 				// Check if 127.0.0.1:8080 is already registered in simulator's httpHandlers
 				std::string serverKey = "127.0.0.1:8080";
-				bool alreadyRegistered = g_simulator->httpHandlers.count(serverKey) > 0;
+				bool alreadyRegistered = g_simulator->httpHandlers.contains(serverKey);
 
 				if (alreadyRegistered) {
 					TraceEvent("BulkDumpingWorkload")

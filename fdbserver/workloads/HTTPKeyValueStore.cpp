@@ -21,12 +21,9 @@
 #include "flow/Arena.h"
 #include "flow/IRandom.h"
 #include "flow/Trace.h"
-#include "flow/Util.h"
 #include "flow/serialize.h"
 #include "fdbrpc/HTTP.h"
 #include "fdbserver/tester/workloads.h"
-#include <cstring>
-#include <limits>
 
 /*
  * Implements a basic put/get key-value store over HTTP to test the http client and simulated server code.
@@ -193,7 +190,7 @@ struct HTTPKeyValueStoreWorkload : TestWorkload {
 
 	PerfIntCounter getCount, putCount, connectCount, failedConnectCount;
 
-	HTTPKeyValueStoreWorkload(WorkloadContext const& wcx)
+	explicit HTTPKeyValueStoreWorkload(WorkloadContext const& wcx)
 	  : TestWorkload(wcx), putCount("PutCount"), getCount("GetCount"), connectCount("ConnectCount"),
 	    failedConnectCount("FailedConnectCount") {
 		testDuration = getOption(options, "testDuration"_sr, 30.0);
@@ -280,7 +277,7 @@ struct HTTPKeyValueStoreWorkload : TestWorkload {
 				    HTTP::doRequest(self->conn, req, sendReceiveRate, &bytes_sent, sendReceiveRate), 5.0);
 
 				// sometimes randomly close connection anyway
-				if (BUGGIFY_WITH_PROB(0.1)) {
+				if (buggify(0.1)) {
 					ASSERT(self->conn.isValid());
 					self->conn->close();
 					self->conn.clear();

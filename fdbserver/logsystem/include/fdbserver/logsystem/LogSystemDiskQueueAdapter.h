@@ -24,7 +24,8 @@
 
 #include "fdbclient/FDBTypes.h"
 #include "fdbserver/core/IDiskQueue.h"
-#include "fdbserver/core/LogSystem.h"
+#include "fdbserver/logsystem/LogSystem.h"
+#include "fdbserver/logsystem/LogSystemConsumer.h"
 
 struct PeekTxsInfo {
 	int8_t primaryLocality;
@@ -44,33 +45,33 @@ struct PeekTxsInfo {
 
 class LogSystemDiskQueueAdapter final : public IDiskQueue {
 public:
-	// This adapter is designed to let KeyValueStoreMemory use ILogSystem
+	// This adapter is designed to let KeyValueStoreMemory use LogSystem
 	// as a backing store, so that the transaction subsystem can in
 	// turn use KeyValueStoreMemory to track configuration information as of
 	// the database version and recover it from the logging subsystem as necessary.
 
 	// Because the transaction subsystem will need to control the actual pushing of
-	// committed information to the ILogSystem, commit() in this interface doesn't directly
-	// call ILogSystem::push().  Instead it makes a commit message available through
+	// committed information to the LogSystem, commit() in this interface doesn't directly
+	// call LogSystem::push().  Instead it makes a commit message available through
 	// getCommitMessage(), and doesn't return until its acknowledge promise is set.
-	// The caller is responsible for calling ILogSystem::push() and ILogSystem::pop() with the results.
+	// The caller is responsible for calling LogSystem::push() and LogSystemConsumer::pop() with the results.
 
 	// It does, however, peek the specified tag directly at recovery time.
 
-	LogSystemDiskQueueAdapter(Reference<ILogSystem> logSystem,
+	LogSystemDiskQueueAdapter(Reference<LogSystem> logSystem,
 	                          Reference<AsyncVar<PeekTxsInfo>> peekLocality,
 	                          Version txsPoppedVersion,
 	                          bool recover)
-	  : peekLocality(peekLocality), peekTypeSwitches(0), enableRecovery(recover), logSystem(logSystem),
+	  : peekLocality(peekLocality), peekTypeSwitches(0), enableRecovery(recover), logSystem(logSystem->makeConsumer()),
 	    startLoc(txsPoppedVersion), recoveryLoc(txsPoppedVersion), recoveryQueueLoc(txsPoppedVersion),
 	    recoveryQueueDataSize(0), poppedUpTo(0), nextCommit(1), hasDiscardedData(false), totalRecoveredBytes(0) {
 		if (enableRecovery) {
 			localityChanged = peekLocality ? peekLocality->onChange() : Never();
-			cursor = logSystem->peekTxs(UID(),
-			                            txsPoppedVersion,
-			                            peekLocality ? peekLocality->get().primaryLocality : tagLocalityInvalid,
-			                            peekLocality ? peekLocality->get().knownCommittedVersion : invalidVersion,
-			                            true);
+			cursor = this->logSystem->peekTxs(UID(),
+			                                  txsPoppedVersion,
+			                                  peekLocality ? peekLocality->get().primaryLocality : tagLocalityInvalid,
+			                                  peekLocality ? peekLocality->get().knownCommittedVersion : invalidVersion,
+			                                  true);
 		}
 	}
 
@@ -118,12 +119,12 @@ public:
 private:
 	Reference<AsyncVar<PeekTxsInfo>> peekLocality;
 	Future<Void> localityChanged;
-	Reference<ILogSystem::IPeekCursor> cursor;
+	Reference<IPeekCursor> cursor;
 	int peekTypeSwitches;
 
 	// Recovery state (used while readNext() is being called repeatedly)
 	bool enableRecovery;
-	Reference<ILogSystem> logSystem;
+	Reference<LogSystemConsumer> logSystem;
 	Version startLoc, recoveryLoc, recoveryQueueLoc;
 	std::vector<Standalone<StringRef>> recoveryQueue;
 	int recoveryQueueDataSize;
@@ -139,7 +140,7 @@ private:
 	friend class LogSystemDiskQueueAdapterImpl;
 };
 
-LogSystemDiskQueueAdapter* openDiskQueueAdapter(Reference<ILogSystem> logSystem,
+LogSystemDiskQueueAdapter* openDiskQueueAdapter(Reference<LogSystem> logSystem,
                                                 Reference<AsyncVar<PeekTxsInfo>> peekLocality,
                                                 Version txsPoppedVersion);
 

@@ -31,7 +31,7 @@ struct TagThrottleApiWorkload : TestWorkload {
 
 	constexpr static auto NAME = "TagThrottleApi";
 
-	TagThrottleApiWorkload(WorkloadContext const& wcx) : TestWorkload(wcx) {
+	explicit TagThrottleApiWorkload(WorkloadContext const& wcx) : TestWorkload(wcx) {
 		testDuration = getOption(options, "testDuration"_sr, 10.0);
 		autoThrottleEnabled = SERVER_KNOBS->AUTO_TAG_THROTTLING_ENABLED;
 	}
@@ -42,7 +42,7 @@ struct TagThrottleApiWorkload : TestWorkload {
 	}
 
 	Future<Void> start(Database const& cx) override {
-		if (SERVER_KNOBS->GLOBAL_TAG_THROTTLING || this->clientId != 0)
+		if (this->clientId != 0)
 			return Void();
 		return timeout(runThrottleApi(this, cx), testDuration, Void());
 	}

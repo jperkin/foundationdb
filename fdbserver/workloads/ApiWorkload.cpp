@@ -24,6 +24,7 @@
 #include "fdbclient/MultiVersionTransaction.h"
 
 #include "fdbrpc/simulator.h"
+#include "fdbserver/core/FDBSimulationPolicy.h"
 
 #include "flow/Arena.h"
 #include "flow/FastRef.h"
@@ -56,8 +57,8 @@ Future<Void> ApiWorkload::clearKeyspace() {
 }
 
 Future<Void> setup(Database cx, ApiWorkload* self) {
-	self->transactionFactory = Reference<TransactionFactoryInterface>(
-	    new TransactionFactory<FlowTransactionWrapper<Transaction>, const Database>(cx, cx, false));
+	self->transactionFactory =
+	    makeReference<TransactionFactory<FlowTransactionWrapper<Transaction>, const Database>>(cx, cx, false);
 
 	// Clear keyspace before running
 	co_await timeoutError(self->clearKeyspace(), 600);
@@ -257,14 +258,14 @@ Key ApiWorkload::generateKey(VectorRef<KeyValueRef> const& data,
 	}
 
 	// If encryption validation is enabled; slip "marker pattern" at random location in generated key
-	if (g_network->isSimulated() && g_simulator->dataAtRestPlaintextMarker.present() &&
-	    keyLength + 1 > g_simulator->dataAtRestPlaintextMarker.get().size()) {
-		int len = keyLength - g_simulator->dataAtRestPlaintextMarker.get().size();
+	if (g_network->isSimulated() && fdbSimulationPolicyState().dataAtRestPlaintextMarker.present() &&
+	    keyLength + 1 > fdbSimulationPolicyState().dataAtRestPlaintextMarker.get().size()) {
+		int len = keyLength - fdbSimulationPolicyState().dataAtRestPlaintextMarker.get().size();
 		// Avoid updating the first byte of the key
 		int idx = len > 1 ? deterministicRandom()->randomInt(1, len) : 1;
 		memcpy(&keyBuffer[idx],
-		       g_simulator->dataAtRestPlaintextMarker.get().c_str(),
-		       g_simulator->dataAtRestPlaintextMarker.get().size());
+		       fdbSimulationPolicyState().dataAtRestPlaintextMarker.get().c_str(),
+		       fdbSimulationPolicyState().dataAtRestPlaintextMarker.get().size());
 		//TraceEvent(SevDebug, "ModifiedKey").suppressFor(5).detail("Key", keyBuffer);
 	}
 
@@ -298,13 +299,13 @@ Value ApiWorkload::generateValue(int minValueLength, int maxValueLength) {
 	std::string ret(std::string(valueLength, 'x'));
 
 	// If encryption validation is enabled; slip "marker pattern" at random location in generated key
-	if (g_network->isSimulated() && g_simulator->dataAtRestPlaintextMarker.present() &&
-	    valueLength > g_simulator->dataAtRestPlaintextMarker.get().size()) {
-		int len = valueLength - g_simulator->dataAtRestPlaintextMarker.get().size();
+	if (g_network->isSimulated() && fdbSimulationPolicyState().dataAtRestPlaintextMarker.present() &&
+	    valueLength > fdbSimulationPolicyState().dataAtRestPlaintextMarker.get().size()) {
+		int len = valueLength - fdbSimulationPolicyState().dataAtRestPlaintextMarker.get().size();
 		int idx = deterministicRandom()->randomInt(0, len);
 		memcpy(&ret[idx],
-		       g_simulator->dataAtRestPlaintextMarker.get().c_str(),
-		       g_simulator->dataAtRestPlaintextMarker.get().size());
+		       fdbSimulationPolicyState().dataAtRestPlaintextMarker.get().c_str(),
+		       fdbSimulationPolicyState().dataAtRestPlaintextMarker.get().size());
 		//TraceEvent("ModifiedValue").suppressFor(5).detail("Value", ret);
 	}
 	return Value(ret);
@@ -322,28 +323,28 @@ Future<Void> chooseTransactionFactory(Database cx, std::vector<TransactionType> 
 
 	if (transactionType == NATIVE) {
 		printf("client %d: Running NativeAPI Transactions\n", self->clientPrefixInt);
-		self->transactionFactory = Reference<TransactionFactoryInterface>(
-		    new TransactionFactory<FlowTransactionWrapper<Transaction>, const Database>(
-		        cx, self->extraDB, self->useExtraDB));
+		self->transactionFactory =
+		    makeReference<TransactionFactory<FlowTransactionWrapper<Transaction>, const Database>>(
+		        cx, self->extraDB, self->useExtraDB);
 	} else if (transactionType == READ_YOUR_WRITES) {
 		printf("client %d: Running ReadYourWrites Transactions\n", self->clientPrefixInt);
-		self->transactionFactory = Reference<TransactionFactoryInterface>(
-		    new TransactionFactory<FlowTransactionWrapper<ReadYourWritesTransaction>, const Database>(
-		        cx, self->extraDB, self->useExtraDB));
+		self->transactionFactory =
+		    makeReference<TransactionFactory<FlowTransactionWrapper<ReadYourWritesTransaction>, const Database>>(
+		        cx, self->extraDB, self->useExtraDB);
 	} else if (transactionType == THREAD_SAFE) {
 		printf("client %d: Running ThreadSafe Transactions\n", self->clientPrefixInt);
 		Reference<IDatabase> dbHandle =
 		    co_await unsafeThreadFutureToFuture(ThreadSafeDatabase::createFromExistingDatabase(cx));
-		self->transactionFactory = Reference<TransactionFactoryInterface>(
-		    new TransactionFactory<ThreadTransactionWrapper, Reference<IDatabase>>(dbHandle, dbHandle, false));
+		self->transactionFactory = makeReference<TransactionFactory<ThreadTransactionWrapper, Reference<IDatabase>>>(
+		    dbHandle, dbHandle, false);
 	} else if (transactionType == MULTI_VERSION) {
 		printf("client %d: Running Multi-Version Transactions\n", self->clientPrefixInt);
 		MultiVersionApi::api->selectApiVersion(cx->apiVersion.version());
 		Reference<IDatabase> threadSafeHandle =
 		    co_await unsafeThreadFutureToFuture(ThreadSafeDatabase::createFromExistingDatabase(cx));
 		Reference<IDatabase> dbHandle = MultiVersionDatabase::debugCreateFromExistingDatabase(threadSafeHandle);
-		self->transactionFactory = Reference<TransactionFactoryInterface>(
-		    new TransactionFactory<ThreadTransactionWrapper, Reference<IDatabase>>(dbHandle, dbHandle, false));
+		self->transactionFactory = makeReference<TransactionFactory<ThreadTransactionWrapper, Reference<IDatabase>>>(
+		    dbHandle, dbHandle, false);
 	}
 }
 

@@ -90,6 +90,13 @@ else()
   set(WITH_C_BINDING OFF)
 endif()
 
+# mako is a benchmark client built on top of the C binding. Off by default
+# because nothing in the default build depends on it; opt in by configuring
+# CMake with -DBUILD_MAKO=ON. build-images.sh auto-detects packages/bin/mako
+# and includes it in the docker image when present. Also needed by the PGO
+# generate_profile target.
+option(BUILD_MAKO "build the mako benchmark client" OFF)
+
 ################################################################################
 # Java Bindings
 ################################################################################
@@ -262,28 +269,19 @@ set(WITH_LIBURING OFF CACHE BOOL "Build with liburing enabled") # Set this to ON
 # TOML11
 ################################################################################
 
-# TOML can download and install itself into the binary directory, so it should
-# always be available.
-find_package(toml11 3.4.0)
-if(toml11_FOUND)
-  message(STATUS "Using TOML11 from system")
-  add_library(toml11_target INTERFACE)
-  target_link_libraries(toml11_target INTERFACE toml11)
-else()
-  include(ExternalProject)
-  ExternalProject_add(toml11Project
-    URL "https://github.com/ToruNiina/toml11/archive/v3.4.0.tar.gz"
-    URL_HASH SHA256=bc6d733efd9216af8c119d8ac64a805578c79cc82b813e4d1d880ca128bd154d
-    CMAKE_CACHE_ARGS
-      -DCMAKE_BUILD_TYPE:STRING=${CMAKE_BUILD_TYPE}
-      -DCMAKE_C_COMPILER:FILEPATH=${CMAKE_C_COMPILER}
-      -DCMAKE_CXX_COMPILER:FILEPATH=${CMAKE_CXX_COMPILER}
-      -DCMAKE_INSTALL_PREFIX:PATH=${CMAKE_CURRENT_BINARY_DIR}/toml11
-      -Dtoml11_BUILD_TEST:BOOL=OFF
-    BUILD_ALWAYS ON)
-  add_library(toml11_target INTERFACE)
-  add_dependencies(toml11_target toml11Project)
-  target_include_directories(toml11_target SYSTEM INTERFACE ${CMAKE_CURRENT_BINARY_DIR}/toml11/include)
+find_package(toml11 3.8.1 EXACT QUIET CONFIG)
+if(NOT toml11_FOUND)
+  include(FetchContent)
+  FetchContent_Declare(
+    toml11
+    URL "https://github.com/ToruNiina/toml11/archive/v3.8.1.tar.gz"
+    URL_HASH SHA256=6a3d20080ecca5ea42102c078d3415bef80920f6c4ea2258e87572876af77849
+    SOURCE_SUBDIR fdb_header_only_dependency
+  )
+  FetchContent_MakeAvailable(toml11)
+  add_library(toml11 INTERFACE)
+  target_include_directories(toml11 INTERFACE "${toml11_SOURCE_DIR}")
+  add_library(toml11::toml11 ALIAS toml11)
 endif()
 
 ################################################################################
@@ -382,6 +380,7 @@ function(print_components)
   message(STATUS "Configure CTest (depends on Python):  ${WITH_PYTHON}")
   message(STATUS "Build with RocksDB:                   ${WITH_ROCKSDB}")
   message(STATUS "Build with AWS SDK:                   ${WITH_AWS_BACKUP}")
+  message(STATUS "Build flow with zstd support:         ${FLOW_USE_ZSTD}")
   message(STATUS "Build with gRPC:                      ${WITH_GRPC}")
   message(STATUS "=========================================")
 endfunction()

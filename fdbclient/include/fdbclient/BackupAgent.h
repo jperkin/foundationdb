@@ -28,7 +28,7 @@
 #include "fdbclient/TaskBucket.h"
 #include "fdbclient/Notified.h"
 #include "flow/IAsyncFile.h"
-#include "fdbclient/KeyBackedTypes.actor.h"
+#include "fdbclient/KeyBackedTypes.h"
 #include "fdbclient/BackupContainer.h"
 
 FDB_BOOLEAN_PARAM(LockDB);
@@ -39,8 +39,6 @@ FDB_BOOLEAN_PARAM(WaitForComplete);
 FDB_BOOLEAN_PARAM(ForceAction);
 FDB_BOOLEAN_PARAM(Terminator);
 FDB_BOOLEAN_PARAM(IncrementalBackupOnly);
-FDB_BOOLEAN_PARAM(UsePartitionedLog);
-FDB_BOOLEAN_PARAM(TransformPartitionedLog);
 FDB_BOOLEAN_PARAM(OnlyApplyMutationLogs);
 FDB_BOOLEAN_PARAM(InconsistentSnapshotOnly);
 FDB_BOOLEAN_PARAM(ShowErrors);
@@ -54,6 +52,8 @@ FDB_BOOLEAN_PARAM(PartialBackup);
 FDB_BOOLEAN_PARAM(ReadLowPriority);
 
 extern Optional<std::string> fileBackupAgentProxy;
+
+constexpr int DEFAULT_ENCRYPTION_BLOCK_SIZE = 1048576;
 
 class BackupAgentBase : NonCopyable {
 public:
@@ -144,7 +144,7 @@ class FileBackupAgent : public BackupAgentBase {
 public:
 	FileBackupAgent();
 
-	FileBackupAgent(FileBackupAgent&& r) noexcept
+	explicit(false) FileBackupAgent(FileBackupAgent&& r) noexcept
 	  : subspace(std::move(r.subspace)), config(std::move(r.config)), lastRestorable(std::move(r.lastRestorable)),
 	    taskBucket(std::move(r.taskBucket)), futureBucket(std::move(r.futureBucket)) {}
 
@@ -273,9 +273,10 @@ public:
 	                          std::string const& tagName,
 	                          Standalone<VectorRef<KeyRangeRef>> backupRanges,
 	                          StopWhenDone = StopWhenDone::True,
-	                          UsePartitionedLog = UsePartitionedLog::False,
+	                          MutationLogType mutationLogType = MutationLogType::DEFAULT,
 	                          IncrementalBackupOnly = IncrementalBackupOnly::False,
 	                          Optional<std::string> const& encryptionKeyFileName = {},
+	                          int encryptionBlockSize = 0,
 	                          int snapshotMode = 0);
 	// snapshotMode: 0=RANGEFILE (default), 1=BULKDUMP, 2=BOTH
 	Future<Void> submitBackup(Database cx,
@@ -286,9 +287,10 @@ public:
 	                          std::string const& tagName,
 	                          Standalone<VectorRef<KeyRangeRef>> backupRanges,
 	                          StopWhenDone stopWhenDone = StopWhenDone::True,
-	                          UsePartitionedLog partitionedLog = UsePartitionedLog::False,
+	                          MutationLogType mutationLogType = MutationLogType::DEFAULT,
 	                          IncrementalBackupOnly incrementalBackupOnly = IncrementalBackupOnly::False,
 	                          Optional<std::string> const& encryptionKeyFileName = {},
+	                          int encryptionBlockSize = 0,
 	                          int snapshotMode = 0) {
 		// Note: Do NOT call checkAndDisableBackupWorkers here. That function is for cleanup
 		// when backups END (abort/discontinue), not when they START. Calling it here causes
@@ -303,9 +305,10 @@ public:
 			                    tagName,
 			                    backupRanges,
 			                    stopWhenDone,
-			                    partitionedLog,
+			                    mutationLogType,
 			                    incrementalBackupOnly,
 			                    encryptionKeyFileName,
+			                    encryptionBlockSize,
 			                    snapshotMode);
 		});
 	}
@@ -314,7 +317,7 @@ public:
 	Future<Void> discontinueBackup(Database cx, Key tagName) {
 		return runRYWTransaction(
 		           cx, [=](Reference<ReadYourWritesTransaction> tr) { return discontinueBackup(tr, tagName); }) +
-		       checkAndDisableBackupWorkers(cx);
+		       checkAndDisableBackupWorkers(cx) + checkAndDisableRangeBackupWorkers(cx);
 	}
 
 	// Terminate an ongoing backup, without waiting for the backup to finish.
@@ -329,11 +332,14 @@ public:
 		// First abort the backup, then check and disable backup workers if needed.
 		return runRYWTransaction(cx,
 		                         [=](Reference<ReadYourWritesTransaction> tr) { return abortBackup(tr, tagName); }) +
-		       checkAndDisableBackupWorkers(cx);
+		       checkAndDisableBackupWorkers(cx) + checkAndDisableRangeBackupWorkers(cx);
 	}
 
 	// Disable backup workers if no active partitioned backup is running.
 	Future<Void> checkAndDisableBackupWorkers(Database cx);
+
+	// Disable range backup workers if no active range-partitioned backup is running.
+	Future<Void> checkAndDisableRangeBackupWorkers(Database cx);
 
 	Future<std::string> getStatus(Database cx, ShowErrors, std::string tagName);
 	Future<std::string> getStatusJSON(Database cx, std::string tagName);
@@ -388,7 +394,7 @@ public:
 	DatabaseBackupAgent();
 	explicit DatabaseBackupAgent(Database src);
 
-	DatabaseBackupAgent(DatabaseBackupAgent&& r) noexcept
+	explicit(false) DatabaseBackupAgent(DatabaseBackupAgent&& r) noexcept
 	  : subspace(std::move(r.subspace)), states(std::move(r.states)), config(std::move(r.config)),
 	    errors(std::move(r.errors)), ranges(std::move(r.ranges)), tagNames(std::move(r.tagNames)),
 	    sourceStates(std::move(r.sourceStates)), sourceTagNames(std::move(r.sourceTagNames)),
@@ -763,6 +769,7 @@ inline Standalone<StringRef> TupleCodec<Reference<IBackupContainer>>::pack(Refer
 		tuple.append(StringRef());
 	}
 
+	tuple.append((int64_t)bc->getEncryptionBlockSize());
 	return tuple.pack();
 }
 template <>
@@ -782,7 +789,11 @@ inline Reference<IBackupContainer> TupleCodec<Reference<IBackupContainer>>::unpa
 		proxy = t.getString(2).toString();
 	}
 
-	return IBackupContainer::openContainer(url, proxy, encryptionKeyFileName);
+	int blockSize = 0;
+	if (t.size() > 3) {
+		blockSize = (int)t.getInt(3);
+	}
+	return IBackupContainer::openContainer(url, proxy, encryptionKeyFileName, blockSize);
 }
 
 class BackupConfig : public KeyBackedTaskConfig {
@@ -894,8 +905,8 @@ public:
 		return configSpace.pack(__FUNCTION__sr);
 	}
 
-	// Set to true if partitioned log is enabled (only useful if backup worker is also enabled).
-	KeyBackedProperty<bool> partitionedLogEnabled() { return configSpace.pack(__FUNCTION__sr); }
+	// Mutation log type: 0 - DEFAULT (backup v1), 1 = PARTITIONED_LOG, 2 = RANGE_PARTITIONED_LOG.
+	KeyBackedProperty<MutationLogType> mutationLogType() { return configSpace.pack(__FUNCTION__sr); }
 
 	// Set to true if only requesting incremental backup without base snapshot.
 	KeyBackedProperty<bool> incrementalBackupOnly() { return configSpace.pack(__FUNCTION__sr); }
@@ -921,6 +932,10 @@ public:
 	// BulkDump total keys - stored when BulkDump snapshot completes
 	KeyBackedProperty<int64_t> bulkDumpTotalKeys() { return configSpace.pack(__FUNCTION__sr); }
 
+	// BulkDump snapshot end version - set when BulkDump task completes
+	// Used for mode=BOTH to track that BulkDump data is available
+	KeyBackedProperty<Version> bulkDumpSnapshotEndVersion() { return configSpace.pack(__FUNCTION__sr); }
+
 	// Latest version for which all prior versions have had their log copy tasks completed
 	KeyBackedProperty<Version> latestLogEndVersion() { return configSpace.pack(__FUNCTION__sr); }
 
@@ -937,15 +952,55 @@ public:
 		tr->setOption(FDBTransactionOptions::READ_LOCK_AWARE);
 		auto lastLog = latestLogEndVersion().get(tr);
 		auto firstSnapshot = firstSnapshotEndVersion().get(tr);
-		auto plogEnabled = partitionedLogEnabled().get(tr);
+		auto mutLogType = mutationLogType().get(tr);
 		auto workerVersion = latestBackupWorkerSavedVersion().get(tr);
 		auto incrementalBackup = incrementalBackupOnly().get(tr);
-		return map(success(lastLog) && success(firstSnapshot) && success(plogEnabled) && success(workerVersion) &&
-		               success(incrementalBackup),
+		auto snapMode = snapshotMode().get(tr);
+		auto bulkDumpSnapshot = bulkDumpSnapshotEndVersion().get(tr);
+		return map(success(lastLog) && success(firstSnapshot) && success(mutLogType) && success(workerVersion) &&
+		               success(incrementalBackup) && success(snapMode) && success(bulkDumpSnapshot),
 		           [=](Void) -> Optional<Version> {
+			           MutationLogType mutationLogType =
+			               mutLogType.get().present() ? mutLogType.get().get() : MutationLogType::DEFAULT;
 			           // The latest log greater than the oldest snapshot is the restorable version
 			           Optional<Version> logVersion =
-			               plogEnabled.get().present() && plogEnabled.get().get() ? workerVersion.get() : lastLog.get();
+			               mutationLogType == MutationLogType::PARTITIONED_LOG ? workerVersion.get() : lastLog.get();
+
+			           // For mode=BOTH (2), require both rangefile and bulkdump snapshots to be complete
+			           int mode = snapMode.get().present() ? snapMode.get().get() : 0;
+			           if (mode == 2) {
+				           // BOTH mode: need both firstSnapshotEndVersion (rangefile) and bulkDumpSnapshotEndVersion
+				           if (!firstSnapshot.get().present() || !bulkDumpSnapshot.get().present()) {
+					           // Incremental-only backup doesn't need snapshots
+					           if (logVersion.present() && incrementalBackup.isReady() &&
+					               incrementalBackup.get().present() && incrementalBackup.get().get()) {
+						           return logVersion.get() - 1;
+					           }
+					           return {}; // Not restorable until both complete
+				           }
+				           // Use the minimum of both as the effective first snapshot version
+				           Version effectiveFirstSnapshot =
+				               std::min(firstSnapshot.get().get(), bulkDumpSnapshot.get().get());
+				           if (logVersion.present() && logVersion.get() > effectiveFirstSnapshot) {
+					           return std::max(logVersion.get() - 1, effectiveFirstSnapshot);
+				           }
+				           return {};
+			           }
+
+			           // For mode=BULKDUMP (1), use bulkDumpSnapshotEndVersion
+			           if (mode == 1) {
+				           if (logVersion.present() && bulkDumpSnapshot.get().present() &&
+				               logVersion.get() > bulkDumpSnapshot.get().get()) {
+					           return std::max(logVersion.get() - 1, bulkDumpSnapshot.get().get());
+				           }
+				           if (logVersion.present() && incrementalBackup.isReady() &&
+				               incrementalBackup.get().present() && incrementalBackup.get().get()) {
+					           return logVersion.get() - 1;
+				           }
+				           return {};
+			           }
+
+			           // For mode=RANGEFILE (0, default), use existing logic with firstSnapshotEndVersion
 			           if (logVersion.present() && firstSnapshot.get().present() &&
 			               logVersion.get() > firstSnapshot.get().get()) {
 				           return std::max(logVersion.get() - 1, firstSnapshot.get().get());

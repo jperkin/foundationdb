@@ -120,76 +120,6 @@ def maintenance(logger):
 
 
 @enable_logging()
-def quota(logger):
-    # Should be a noop
-    command = "quota clear green"
-    output = run_fdbcli_command(command)
-    logger.debug(command + " : " + output)
-    assert output == "Successfully cleared quota."
-
-    command = "quota get green total_throughput"
-    output = run_fdbcli_command(command)
-    logger.debug(command + " : " + output)
-    assert output == "<empty>"
-
-    # Ignored update
-    command = "quota set red total_throughput 49152"
-    output = run_fdbcli_command(command)
-    logger.debug(command + " : " + output)
-    assert output == "Successfully updated quota."
-
-    command = "quota set green total_throughput 32768"
-    output = run_fdbcli_command(command)
-    logger.debug(command + " : " + output)
-    assert output == "Successfully updated quota."
-
-    command = "quota set green reserved_throughput 16384"
-    output = run_fdbcli_command(command)
-    logger.debug(command + " : " + output)
-    assert output == "Successfully updated quota."
-
-    command = "quota set green storage 98765"
-    output = run_fdbcli_command(command)
-    logger.debug(command + " : " + output)
-    assert output == "Successfully updated quota."
-
-    command = "quota get green total_throughput"
-    output = run_fdbcli_command(command)
-    logger.debug(command + " : " + output)
-    assert output == "32768"
-
-    command = "quota get green reserved_throughput"
-    output = run_fdbcli_command(command)
-    logger.debug(command + " : " + output)
-    assert output == "16384"
-
-    command = "quota get green storage"
-    output = run_fdbcli_command(command)
-    logger.debug(command + " : " + output)
-    assert output == "98765"
-
-    command = "quota clear green"
-    output = run_fdbcli_command(command)
-    logger.debug(command + " : " + output)
-    assert output == "Successfully cleared quota."
-
-    command = "quota get green total_throughput"
-    output = run_fdbcli_command(command)
-    logger.debug(command + " : " + output)
-    assert output == "<empty>"
-
-    command = "quota get green storage"
-    output = run_fdbcli_command(command)
-    logger.debug(command + " : " + output)
-    assert output == "<empty>"
-
-    # Too few arguments, should log help message
-    command = "quota get green"
-    output = run_fdbcli_command(command)
-    logger.debug(command + " : " + output)
-
-
-@enable_logging()
 def setclass(logger):
     # get all processes' network addresses
     output1 = run_fdbcli_command("setclass")
@@ -456,7 +386,7 @@ def versionepoch(logger):
     version11 = run_fdbcli_command("versionepoch commit")
     assert version11.startswith("Current read version is ")
     # the test can trigger recovery, thus we wait until the recovery is finished to move to the next test
-    wait_for_database_available(logger)
+    wait_for_database_fully_recovered(logger)
 
 
 def get_value_from_status_json(retry, *args):
@@ -471,6 +401,64 @@ def get_value_from_status_json(retry, *args):
     return result
 
 
+def status_json_file_region_failover_message():
+    status_json = {
+        "client": {
+            "cluster_file": {"path": "fdb.cluster", "up_to_date": True},
+            "coordinators": {"coordinators": [], "quorum_reachable": True},
+            "database_status": {"available": True, "healthy": False},
+            "messages": [],
+            "timestamp": 1417807090,
+        },
+        "cluster": {
+            "configuration": {
+                "redundancy_mode": "three_data_hall",
+                "storage_engine": "ssd-2",
+                "coordinators_count": 3,
+                "excluded_servers": [],
+            },
+            "data": {"state": {"name": "healthy", "healthy": True}},
+            "fault_tolerance": {
+                "max_zone_failures_without_losing_availability": -1,
+                "max_zone_failures_without_losing_data": -1,
+            },
+            "logs": [
+                {
+                    "epoch": 1,
+                    "current": True,
+                    "begin_version": 1,
+                    "possibly_losing_data": False,
+                    "log_interfaces": [
+                        {
+                            "id": "aaaaaaaaaaaaaaaa",
+                            "healthy": False,
+                            "address": "1.1.1.1:4500",
+                        }
+                    ],
+                }
+            ],
+            "machines": {},
+            "processes": {},
+        },
+    }
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json") as status_file:
+        json.dump(status_json, status_file)
+        status_file.flush()
+        result = subprocess.run(
+            [command_template[0], "--status-from-json", status_file.name],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=fdbcli_env,
+        )
+
+    stdout = result.stdout.decode("utf-8")
+    stderr = result.stderr.decode("utf-8")
+    assert result.returncode == 0, stderr
+    assert "Warning: the database may have availability loss." in stdout
+    assert "may have data loss" not in stdout
+
+
 @enable_logging()
 def consistencycheck(logger):
     consistency_check_on_output = "ConsistencyCheck is on"
@@ -483,7 +471,6 @@ def consistencycheck(logger):
     run_fdbcli_command("consistencycheck", "on")
     output3 = run_fdbcli_command("consistencycheck")
     assert output3 == consistency_check_on_output
-
 
 
 @enable_logging()
@@ -602,6 +589,60 @@ def transaction(logger):
     assert output7 == "`key': not found"
 
 
+@enable_logging()
+def clearrange_prefix(logger):
+    """This test covers the clearrange fdbcli command with optional ENDKEY (prefix mode)."""
+    # Test 1: clearrange without writemode should fail
+    err1 = run_fdbcli_command_and_get_error("clearrange", "prefix")
+    assert (
+        err1 == "ERROR: writemode must be enabled to set or clear keys in the database."
+    )
+    # Test 2: set keys with a shared prefix and one without, then clearrange with prefix only
+    process = subprocess.Popen(
+        command_template[:-1],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        env=fdbcli_env,
+    )
+    transaction_flow = [
+        "writemode on",
+        "set prefix_aaa val1",
+        "set prefix_bbb val2",
+        "set prefix_ccc val3",
+        "set other_key val4",
+        "clearrange prefix_",
+        # verify prefix keys are gone
+        "get prefix_aaa",
+        "get prefix_bbb",
+        "get prefix_ccc",
+        # verify non-prefix key is still present
+        "get other_key",
+    ]
+    output1, _ = process.communicate(input="\n".join(transaction_flow).encode())
+    lines = list(filter(len, output1.decode().split("\n")))
+    logger.debug("Output lines: {}".format(lines))
+    # Find the get results (last 4 meaningful lines before the prompt)
+    get_results = [l for l in lines if "not found" in l or "is `" in l]
+    logger.debug("Get results: {}".format(get_results))
+    assert len(get_results) == 4
+    assert get_results[0] == "`prefix_aaa': not found"
+    assert get_results[1] == "`prefix_bbb': not found"
+    assert get_results[2] == "`prefix_ccc': not found"
+    assert get_results[3] == "`other_key' is `val4'"
+    # Cleanup: remove the remaining key
+    process = subprocess.Popen(
+        command_template[:-1],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        env=fdbcli_env,
+    )
+    cleanup_flow = [
+        "writemode on",
+        "clear other_key",
+    ]
+    process.communicate(input="\n".join(cleanup_flow).encode())
+
+
 def get_fdb_process_addresses(logger):
     # get all processes' network addresses
     output = run_fdbcli_command("kill")
@@ -648,7 +689,7 @@ def coordinators(logger):
         len(get_value_from_status_json(True, "client", "coordinators", "coordinators"))
         == 1
     )
-    wait_for_database_available(logger)
+    wait_for_database_fully_recovered(logger)
 
 
 @enable_logging(logging.DEBUG)
@@ -711,7 +752,7 @@ def exclude(logger):
     # check the include is successful
     output4 = run_fdbcli_command("exclude")
     assert no_excluded_process_output in output4
-    wait_for_database_available(logger)
+    wait_for_database_fully_recovered(logger)
 
 
 # read the system key 'k', need to enable the option first
@@ -746,13 +787,20 @@ def throttle(logger):
     # TODO : test manual throttling, not easy to do now
 
 
-def wait_for_database_available(logger):
-    # sometimes the change takes some time to have effect and the database can be unavailable at that time
-    # this is to wait until the database is available again
-    while not get_value_from_status_json(
-        True, "client", "database_status", "available"
-    ):
-        logger.debug("Database unavailable for now, wait for one second")
+def wait_for_database_fully_recovered(logger):
+    # Database availability precedes full recovery and is not sufficient before tests that
+    # make assertions about recovery generations.
+    while True:
+        status = json.loads(run_fdbcli_command("status", "json"))
+        available = status["client"]["database_status"]["available"]
+        recovery_state = status.get("cluster", {}).get("recovery_state", {}).get("name")
+        if available and recovery_state == "fully_recovered":
+            return
+        logger.debug(
+            "Database available: {}, recovery state: {}; wait for one second".format(
+                available, recovery_state
+            )
+        )
         time.sleep(1)
 
 
@@ -939,17 +987,17 @@ if __name__ == "__main__":
         lockAndUnlock()
         maintenance()
         profile()
-        # TODO: re-enable it until it's stable
+        # TODO: re-enable once stable
         # suspend()
         transaction()
-        # this is replaced by the "quota" command
+        clearrange_prefix()
+        # TODO: re-enable once stable
         # throttle()
         triggerddteaminfolog()
         versionepoch()
         integer_options()
         tls_address_suffix()
-        # TODO: fix the issue when running through the external client
-        # quota()
+        status_json_file_region_failover_message()
         idempotency_ids()
     else:
         assert args.process_number > 1, "Process number should be positive"

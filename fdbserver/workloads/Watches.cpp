@@ -25,7 +25,6 @@
 #include "flow/Coroutines.h"
 #include "flow/DeterministicRandom.h"
 #include "fdbserver/tester/workloads.h"
-#include "flow/actorcompiler.h" // This must be the last #include.
 
 struct WatchesWorkload : TestWorkload {
 	static constexpr auto NAME = "Watches";
@@ -37,7 +36,7 @@ struct WatchesWorkload : TestWorkload {
 	DDSketch<double> cycleLatencies;
 	std::vector<int> nodeOrder;
 
-	WatchesWorkload(WorkloadContext const& wcx) : TestWorkload(wcx), cycles("Cycles"), cycleLatencies() {
+	explicit WatchesWorkload(WorkloadContext const& wcx) : TestWorkload(wcx), cycles("Cycles"), cycleLatencies() {
 		testDuration = getOption(options, "testDuration"_sr, 600.0);
 		nodes = getOption(options, "nodeCount"_sr, 100);
 		extraPerNode = getOption(options, "extraPerNode"_sr, 1000);
@@ -159,7 +158,7 @@ struct WatchesWorkload : TestWorkload {
 						//TraceEvent("WatcherWatch").detail("Watch", printable(watchKey));
 						Future<Void> watchFuture = tr->watch(makeReference<Watch>(watchKey, watchValue));
 						co_await tr->commit();
-						if (BUGGIFY) {
+						if (buggify()) {
 							// Make watch future outlive transaction
 							tr.reset();
 						}

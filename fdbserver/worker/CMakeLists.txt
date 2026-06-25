@@ -10,7 +10,25 @@ add_fdbserver_link_test(fdbserver_workerlinktest
   fdbserver_coordinator
   fdbserver_datadistributor
   fdbserver_grvproxy
-  fdbserver_kvstore
+  fdbserver_logrouter
+  fdbserver_logsystem
+  fdbserver_ratekeeper
+  fdbserver_resolver
+  fdbserver_sequencer
+  fdbserver_storageserver
+  fdbserver_tester
+  fdbserver_tlog
+  fdbserver_core
+  fdbctl)
+add_fdbserver_unit_test(fdbserver_worker_test worker
+  fdbserver_worker
+  fdbserver_backupworker
+  fdbserver_clustercontroller
+  fdbserver_commitproxy
+  fdbserver_consistencyscan
+  fdbserver_coordinator
+  fdbserver_datadistributor
+  fdbserver_grvproxy
   fdbserver_logrouter
   fdbserver_logsystem
   fdbserver_ratekeeper
@@ -26,7 +44,6 @@ configure_fdbserver_common_includes(fdbserver_worker)
 target_include_directories(fdbserver_worker
   PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${CMAKE_CURRENT_BINARY_DIR}/include
   PRIVATE
     ${CMAKE_SOURCE_DIR}/fdbserver/include
     ${CMAKE_BINARY_DIR}/fdbserver/include
@@ -45,7 +62,6 @@ target_link_libraries(fdbserver_worker
     fdbserver_coordinator
     fdbserver_datadistributor
     fdbserver_grvproxy
-    fdbserver_kvstore
     fdbserver_logrouter
     fdbserver_logsystem
     fdbserver_ratekeeper

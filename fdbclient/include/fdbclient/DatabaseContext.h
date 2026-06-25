@@ -28,6 +28,7 @@
 #include "fdbclient/StorageServerInterface.h"
 #include "flow/IRandom.h"
 #include "flow/genericactors.actor.h"
+#include <compare>
 #include <vector>
 #include <unordered_map>
 #pragma once
@@ -64,13 +65,10 @@ struct LocationInfo : MultiInterface<ReferencedInterface<StorageServerInterface>
 	using Locations = MultiInterface<ReferencedInterface<StorageServerInterface>>;
 	explicit LocationInfo(const std::vector<Reference<ReferencedInterface<StorageServerInterface>>>& v)
 	  : Locations(v) {}
-	LocationInfo(const std::vector<Reference<ReferencedInterface<StorageServerInterface>>>& v, bool hasCaches)
-	  : Locations(v), hasCaches(hasCaches) {}
 	LocationInfo(const LocationInfo&) = delete;
 	LocationInfo(LocationInfo&&) = delete;
 	LocationInfo& operator=(const LocationInfo&) = delete;
 	LocationInfo& operator=(LocationInfo&&) = delete;
-	bool hasCaches = false;
 	Reference<Locations> locations() { return Reference<Locations>::addRef(this); }
 };
 
@@ -88,7 +86,7 @@ private:
 	Smoother smoothReleased;
 
 public:
-	ClientTagThrottleData(ClientTagThrottleLimits const& limits)
+	explicit ClientTagThrottleData(ClientTagThrottleLimits const& limits)
 	  : tpsRate(limits.tpsRate), expiration(limits.expiration), lastCheck(now()),
 	    smoothRate(CLIENT_KNOBS->TAG_THROTTLE_SMOOTHING_WINDOW),
 	    smoothReleased(CLIENT_KNOBS->TAG_THROTTLE_SMOOTHING_WINDOW) {
@@ -151,7 +149,7 @@ public:
 
 	Reference<const WatchParameters> parameters;
 
-	WatchMetadata(Reference<const WatchParameters> parameters) : parameters(parameters) {}
+	explicit WatchMetadata(Reference<const WatchParameters> parameters) : parameters(parameters) {}
 };
 
 struct MutationAndVersionStream {
@@ -378,7 +376,9 @@ public:
 		TagSet tags;
 		Optional<UID> debugID;
 
-		VersionRequest(SpanContext spanContext, TagSet tags = TagSet(), Optional<UID> debugID = Optional<UID>())
+		explicit VersionRequest(SpanContext spanContext,
+		                        TagSet tags = TagSet(),
+		                        Optional<UID> debugID = Optional<UID>())
 		  : spanContext(spanContext), tags(tags), debugID(debugID) {}
 	};
 
@@ -387,7 +387,16 @@ public:
 		PromiseStream<VersionRequest> stream;
 		Future<Void> actor;
 	};
-	std::map<uint32_t, VersionBatcher> versionBatcher;
+	struct VersionBatcherKey {
+		uint32_t flags;
+		Optional<int64_t> maxGrvQueueDelayMS;
+
+		VersionBatcherKey(uint32_t flags, Optional<int64_t> maxGrvQueueDelayMS)
+		  : flags(flags), maxGrvQueueDelayMS(maxGrvQueueDelayMS) {}
+
+		std::strong_ordering operator<=>(VersionBatcherKey const& rhs) const = default;
+	};
+	std::map<VersionBatcherKey, VersionBatcher> versionBatcher;
 
 	AsyncTrigger connectionFileChangedTrigger;
 
@@ -535,8 +544,6 @@ public:
 
 	UniqueOrderedOptionList<FDBTransactionOptions> transactionDefaults;
 
-	Future<Void> cacheListMonitor;
-	AsyncTrigger updateCache;
 	std::vector<std::unique_ptr<SpecialKeyRangeReadImpl>> specialKeySpaceModules;
 	std::unique_ptr<SpecialKeySpace> specialKeySpace;
 	void registerSpecialKeysImpl(SpecialKeySpace::MODULE module,
@@ -665,7 +672,8 @@ private:
 
 // Similar to tr.onError(), but doesn't require a DatabaseContext.
 struct Backoff {
-	Backoff(double backoff = CLIENT_KNOBS->DEFAULT_BACKOFF, double maxBackoff = CLIENT_KNOBS->DEFAULT_MAX_BACKOFF)
+	explicit Backoff(double backoff = CLIENT_KNOBS->DEFAULT_BACKOFF,
+	                 double maxBackoff = CLIENT_KNOBS->DEFAULT_MAX_BACKOFF)
 	  : backoff(backoff), maxBackoff(maxBackoff) {}
 
 	Future<Void> onError() {

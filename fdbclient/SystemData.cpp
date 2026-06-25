@@ -18,7 +18,7 @@
  * limitations under the License.
  */
 
-#include "fdbclient/KeyBackedTypes.actor.h"
+#include "fdbclient/KeyBackedTypes.h"
 #include "fdbclient/SystemData.h"
 #include "fdbclient/FDBTypes.h"
 #include "fdbclient/StorageServerInterface.h"
@@ -628,49 +628,6 @@ void decodeServerKeysValue(const ValueRef& value,
 	}
 }
 
-const KeyRef cacheKeysPrefix = "\xff\x02/cacheKeys/"_sr;
-
-Key cacheKeysKey(uint16_t idx, const KeyRef& key) {
-	BinaryWriter wr(Unversioned());
-	wr.serializeBytes(cacheKeysPrefix);
-	wr << idx;
-	wr.serializeBytes("/"_sr);
-	wr.serializeBytes(key);
-	return wr.toValue();
-}
-Key cacheKeysPrefixFor(uint16_t idx) {
-	BinaryWriter wr(Unversioned());
-	wr.serializeBytes(cacheKeysPrefix);
-	wr << idx;
-	wr.serializeBytes("/"_sr);
-	return wr.toValue();
-}
-uint16_t cacheKeysDecodeIndex(const KeyRef& key) {
-	uint16_t idx;
-	BinaryReader rd(key.removePrefix(cacheKeysPrefix), Unversioned());
-	rd >> idx;
-	return idx;
-}
-KeyRef cacheKeysDecodeKey(const KeyRef& key) {
-	return key.substr(cacheKeysPrefix.size() + sizeof(uint16_t) + 1);
-}
-
-const KeyRef cacheChangeKey = "\xff\x02/cacheChangeKey"_sr;
-const KeyRangeRef cacheChangeKeys("\xff\x02/cacheChangeKeys/"_sr, "\xff\x02/cacheChangeKeys0"_sr);
-const KeyRef cacheChangePrefix = cacheChangeKeys.begin;
-Key cacheChangeKeyFor(uint16_t idx) {
-	BinaryWriter wr(Unversioned());
-	wr.serializeBytes(cacheChangePrefix);
-	wr << idx;
-	return wr.toValue();
-}
-uint16_t cacheChangeKeyDecodeIndex(const KeyRef& key) {
-	uint16_t idx;
-	BinaryReader rd(key.removePrefix(cacheChangePrefix), Unversioned());
-	rd >> idx;
-	return idx;
-}
-
 const KeyRangeRef tssMappingKeys("\xff/tss/"_sr, "\xff/tss0"_sr);
 
 const KeyRangeRef tssQuarantineKeys("\xff/tssQ/"_sr, "\xff/tssQ0"_sr);
@@ -963,6 +920,7 @@ const KeyRangeRef configKeys("\xff/conf/"_sr, "\xff/conf0"_sr);
 const KeyRef configKeysPrefix = configKeys.begin;
 
 const KeyRef backupWorkerEnabledKey("\xff/conf/backup_worker_enabled"_sr);
+const KeyRef rangeBackupWorkerEnabledKey("\xff/conf/range_backup_worker_enabled"_sr);
 const KeyRef perpetualStorageWiggleKey("\xff/conf/perpetual_storage_wiggle"_sr);
 const KeyRef perpetualStorageWiggleLocalityKey("\xff/conf/perpetual_storage_wiggle_locality"_sr);
 // The below two are there for compatible upgrade and downgrade. After 7.3, the perpetual wiggle related keys should use
@@ -1102,6 +1060,32 @@ WorkerBackupStatus decodeBackupProgressValue(const ValueRef& value) {
 	return status;
 }
 
+const KeyRangeRef backupPartitionMapHistoryKeys("\xff\x02/backupPartitionMap/"_sr, "\xff\x02/backupPartitionMap0"_sr);
+
+Key backupPartitionMapHistoryKeyFor(LogEpoch epoch, Version version) {
+	BinaryWriter wr(Unversioned());
+	wr.serializeBytes(backupPartitionMapHistoryKeys.begin);
+	wr << bigEndian64(epoch) << bigEndian64(version);
+	return wr.toValue();
+}
+
+KeyRange backupPartitionMapHistoryRangeFor(LogEpoch epoch) {
+	BinaryWriter beginW(Unversioned());
+	beginW.serializeBytes(backupPartitionMapHistoryKeys.begin);
+	beginW << bigEndian64(epoch);
+	BinaryWriter endW(Unversioned());
+	endW.serializeBytes(backupPartitionMapHistoryKeys.begin);
+	endW << bigEndian64(epoch + 1);
+	return KeyRangeRef(beginW.toValue(), endW.toValue());
+}
+
+std::pair<LogEpoch, Version> decodeBackupPartitionMapHistoryKey(const KeyRef& key) {
+	BinaryReader rd(key.removePrefix(backupPartitionMapHistoryKeys.begin), Unversioned());
+	int64_t epoch, version;
+	rd >> epoch >> version;
+	return { fromBigEndian64(epoch), fromBigEndian64(version) };
+}
+
 Value encodeBackupStartedValue(const std::vector<std::pair<UID, Version>>& ids) {
 	BinaryWriter wr(IncludeVersion(ProtocolVersion::withBackupStartValue()));
 	wr << ids;
@@ -1116,45 +1100,41 @@ std::vector<std::pair<UID, Version>> decodeBackupStartedValue(const ValueRef& va
 	return ids;
 }
 
+const KeyRef backupPartitionRequiredKey = "\xff\x02/backupPartitionRequired"_sr;
+const KeyRef backupPartitionListKey = "\xff\x02/backupPartitionList"_sr;
+
+Value backupPartitionRequiredValue(int8_t requestType) {
+	BinaryWriter wr(Unversioned());
+	wr << requestType;
+	return wr.toValue();
+}
+
+int8_t decodeBackupPartitionRequiredValue(const ValueRef& value) {
+	int8_t requestType = 0;
+	if (!value.empty()) {
+		BinaryReader reader(value, Unversioned());
+		reader >> requestType;
+	}
+	return requestType;
+}
+
+Value encodeBackupPartitionListValue(const std::vector<KeyRange>& partitions) {
+	BinaryWriter wr(IncludeVersion());
+	wr << partitions;
+	return wr.toValue();
+}
+
+std::vector<KeyRange> decodeBackupPartitionListValue(const ValueRef& value) {
+	std::vector<KeyRange> partitions;
+	if (!value.empty()) {
+		BinaryReader reader(value, IncludeVersion());
+		reader >> partitions;
+	}
+	return partitions;
+}
+
 bool mutationForKey(const MutationRef& m, const KeyRef& key) {
 	return isSingleKeyMutation((MutationRef::Type)m.type) && m.param1 == key;
-}
-
-// Backup keys related to Range Partitioned.
-const KeyRef backupRangePartitionedMapUploadedPrefix = "\xff\x02/backupRangePartitionedMapUploaded/"_sr;
-const KeyRangeRef backupRangePartitionedProgressKeys("\xff\x02/backupRangePartitionedProgress/"_sr,
-                                                     "\xff\x02/backupRangePartitionedProgress0"_sr);
-const KeyRef backupRangePartitionedProgressPrefix = backupRangePartitionedProgressKeys.begin;
-
-Key backupRangePartitionedMapUploadedKeyFor(Version v) {
-	return backupRangePartitionedMapUploadedPrefix.withSuffix(format("%lld", v));
-}
-
-Key backupRangePartitionedProgressKey(UID workerID) {
-	BinaryWriter wr(Unversioned());
-	wr.serializeBytes(backupRangePartitionedProgressPrefix);
-	wr << workerID;
-	return wr.toValue();
-}
-
-Value backupRangePartitionedProgressValue(const WorkerBackupStatus& status) {
-	BinaryWriter wr(IncludeVersion(ProtocolVersion::withBackupProgressValue()));
-	wr << status;
-	return wr.toValue();
-}
-
-UID decodeBackupRangePartitionedProgressKey(const KeyRef& key) {
-	UID serverID;
-	BinaryReader rd(key.removePrefix(backupRangePartitionedProgressPrefix), Unversioned());
-	rd >> serverID;
-	return serverID;
-}
-
-WorkerBackupStatus decodeBackupRangePartitionedProgressValue(const ValueRef& value) {
-	WorkerBackupStatus status;
-	BinaryReader reader(value, IncludeVersion());
-	reader >> status;
-	return status;
 }
 
 const KeyRef previousCoordinatorsKey = "\xff/previousCoordinators"_sr;
@@ -1258,7 +1238,7 @@ BulkDumpState decodeBulkDumpState(const ValueRef& value) {
 const KeyRangeRef bulkDumpOwnerKeys = KeyRangeRef("\xff/bulkDumpOwner/"_sr, "\xff/bulkDumpOwner0"_sr);
 const KeyRef bulkDumpOwnerPrefix = bulkDumpOwnerKeys.begin;
 
-const Key bulkDumpOwnerKeyFor(const UID& jobId) {
+Key bulkDumpOwnerKeyFor(const UID& jobId) {
 	BinaryWriter wr(Unversioned());
 	wr.serializeBytes(bulkDumpOwnerPrefix);
 	wr << jobId;
@@ -1269,7 +1249,7 @@ const Key bulkDumpOwnerKeyFor(const UID& jobId) {
 const KeyRangeRef bulkLoadOwnerKeys = KeyRangeRef("\xff/bulkLoadOwner/"_sr, "\xff/bulkLoadOwner0"_sr);
 const KeyRef bulkLoadOwnerPrefix = bulkLoadOwnerKeys.begin;
 
-const Key bulkLoadOwnerKeyFor(const UID& jobId) {
+Key bulkLoadOwnerKeyFor(const UID& jobId) {
 	BinaryWriter wr(Unversioned());
 	wr.serializeBytes(bulkLoadOwnerPrefix);
 	wr << jobId;

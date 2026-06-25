@@ -20,18 +20,16 @@
 
 #include "flow/flow.h"
 #include "flow/UnitTest.h"
-#include "flow/genericcoros.h"
+#include "genericcoros.h"
 #include "flow/actorcompiler.h" // This must be the last #include.
 
-ACTOR Future<bool> allTrue(std::vector<Future<bool>> all) {
-	state int i = 0;
-	while (i != all.size()) {
-		bool r = wait(all[i]);
+Future<bool> allTrue(std::vector<Future<bool>> all) {
+	for (int i = 0; i != all.size(); ++i) {
+		bool r = co_await all[i];
 		if (!r)
-			return false;
-		i++;
+			co_return false;
 	}
-	return true;
+	co_return true;
 }
 
 ACTOR Future<Void> anyTrue(std::vector<Reference<AsyncVar<bool>>> input, Reference<AsyncVar<bool>> output) {
@@ -48,11 +46,10 @@ ACTOR Future<Void> anyTrue(std::vector<Reference<AsyncVar<bool>>> input, Referen
 	}
 }
 
-ACTOR Future<Void> cancelOnly(std::vector<Future<Void>> futures) {
+Future<Void> cancelOnly([[maybe_unused]] std::vector<Future<Void>> futures) {
 	// We don't do anything with futures except hold them, we never return, but if we are cancelled we (naturally) drop
 	// the futures
-	wait(Never());
-	return Void();
+	co_await Future<Void>(Never());
 }
 
 ACTOR Future<Void> timeoutWarningCollector(FutureStream<Void> input, double logDelay, const char* context, UID id) {
@@ -153,16 +150,12 @@ ACTOR Future<Void> returnIfTrue(Future<bool> f) {
 	throw internal_error();
 }
 
-ACTOR Future<Void> lowPriorityDelay(double waitTime) {
-	state int loopCount = 0;
-	state int totalLoops =
-	    std::max<int>(waitTime / FLOW_KNOBS->LOW_PRIORITY_MAX_DELAY, FLOW_KNOBS->LOW_PRIORITY_DELAY_COUNT);
+Future<Void> lowPriorityDelay(double waitTime) {
+	int totalLoops = std::max<int>(waitTime / FLOW_KNOBS->LOW_PRIORITY_MAX_DELAY, FLOW_KNOBS->LOW_PRIORITY_DELAY_COUNT);
 
-	while (loopCount < totalLoops) {
-		wait(delay(waitTime / totalLoops, TaskPriority::Low));
-		loopCount++;
+	for (int loopCount = 0; loopCount < totalLoops; ++loopCount) {
+		co_await delay(waitTime / totalLoops, TaskPriority::Low);
 	}
-	return Void();
 }
 
 ACTOR Future<Void> delayAfterCleared(Reference<AsyncVar<bool>> condition, double time, TaskPriority taskID) {
@@ -415,22 +408,3 @@ TEST_CASE("/flow/genericcoros/Trigger") {
 
 	return Void();
 }
-
-#if false
-TEST_CASE("/flow/genericactors/generic/storeTuple") {
-	state std::vector<UID> resA;
-	state int resB;
-	state double resC;
-
-	state Promise<std::tuple<std::vector<UID>, int, double>> promise;
-
-	auto future = storeTuple(promise.getFuture(), resA, resB, resC);
-
-	promise.send(std::make_tuple(std::vector<UID>(10), 15, 2.0));
-	wait(ready(future));
-	ASSERT(resA.size() == 10);
-	ASSERT(resB == 15);
-	ASSERT(resC == 2.0);
-	return Void();
-}
-#endif

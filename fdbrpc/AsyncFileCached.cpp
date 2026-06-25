@@ -18,7 +18,7 @@
  * limitations under the License.
  */
 
-#include "fdbrpc/AsyncFileCached.actor.h"
+#include "fdbrpc/AsyncFileCached.h"
 
 // Page caches used in non-simulated environments
 Optional<Reference<EvictablePageCache>> pc4k, pc64k;
@@ -57,9 +57,10 @@ Future<Reference<IAsyncFile>> AsyncFileCached::open_impl(std::string filename, i
 	if (g_network->isSimulated()) {
 		auto cacheItr = simulatorPageCaches.find(g_network->getLocalAddress());
 		if (cacheItr == simulatorPageCaches.end()) {
-			int64_t pageCacheSize4k = (BUGGIFY) ? FLOW_KNOBS->BUGGIFY_SIM_PAGE_CACHE_4K : FLOW_KNOBS->SIM_PAGE_CACHE_4K;
+			int64_t pageCacheSize4k =
+			    (buggify()) ? FLOW_KNOBS->BUGGIFY_SIM_PAGE_CACHE_4K : FLOW_KNOBS->SIM_PAGE_CACHE_4K;
 			int64_t pageCacheSize64k =
-			    (BUGGIFY) ? FLOW_KNOBS->BUGGIFY_SIM_PAGE_CACHE_64K : FLOW_KNOBS->SIM_PAGE_CACHE_64K;
+			    (buggify()) ? FLOW_KNOBS->BUGGIFY_SIM_PAGE_CACHE_64K : FLOW_KNOBS->SIM_PAGE_CACHE_64K;
 			auto caches = std::make_pair(makeReference<EvictablePageCache>(4096, pageCacheSize4k),
 			                             makeReference<EvictablePageCache>(65536, pageCacheSize64k));
 			simulatorPageCaches[g_network->getLocalAddress()] = caches;

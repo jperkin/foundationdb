@@ -129,6 +129,15 @@ ErrorOr<T> errorOr(T t) {
 	return ErrorOr<T>(t);
 }
 
+template <class T>
+AsyncResult<ErrorOr<T>> errorOr(AsyncResult<T> result) {
+	try {
+		co_return ErrorOr<T>(co_await std::move(result));
+	} catch (Error& e) {
+		co_return ErrorOr<T>(e);
+	}
+}
+
 ACTOR template <class T>
 Future<ErrorOr<T>> errorOr(Future<T> f) {
 	try {
@@ -329,19 +338,6 @@ template <class T, class X>
 		return Void();
 	});
 }
-
-#if false
-// NOTE: Think twice whether create a new struct for a complex return type is better before using tuple.
-// If we just use the return type once, is it worth to create a new struct?
-// And enable the unit test in genericactors.actor.cpp
-template <class A, class... Bs>
-Future<Void> storeTuple(Future<std::tuple<A, Bs...>> what, A& a, Bs&... b) {
-	return map(what, [&](std::tuple<A, Bs...> const& v) {
-		std::tie(a, b...) = v;
-		return Void();
-	});
-}
-#endif
 
 template <class T>
 Future<Void> storeOrThrow(T& out, Future<Optional<T>> what, Error e = key_not_found()) {
@@ -662,7 +658,7 @@ public:
 	ReferencedObject() : value() {}
 	explicit ReferencedObject(V const& v) : value(v) {}
 	explicit ReferencedObject(V&& v) : value(std::move(v)) {}
-	ReferencedObject(ReferencedObject&& r) : value(std::move(r.value)) {}
+	explicit(false) ReferencedObject(ReferencedObject&& r) : value(std::move(r.value)) {}
 
 	void operator=(ReferencedObject&& r) { value = std::move(r.value); }
 
@@ -729,7 +725,7 @@ private:
 class AsyncTrigger : NonCopyable {
 public:
 	AsyncTrigger() {}
-	AsyncTrigger(AsyncTrigger&& at) : v(std::move(at.v)) {}
+	explicit(false) AsyncTrigger(AsyncTrigger&& at) : v(std::move(at.v)) {}
 	void operator=(AsyncTrigger&& at) { v = std::move(at.v); }
 	Future<Void> onTrigger() const { return v.onChange(); }
 	void trigger() { v.trigger(); }
@@ -751,7 +747,7 @@ Future<Void> forward(Reference<AsyncVar<T> const> from, AsyncTrigger* to) {
 class Debouncer : NonCopyable {
 public:
 	explicit Debouncer(double delay) { worker = debounceWorker(this, delay); }
-	Debouncer(Debouncer&& at) = default;
+	explicit(false) Debouncer(Debouncer&& at) = default;
 	Debouncer& operator=(Debouncer&& at) = default;
 	Future<Void> onTrigger() { return output.onChange(); }
 	void trigger() { input.setUnconditional(Void()); }
@@ -866,7 +862,7 @@ Future<Void> setWhenDoneOrError(Future<Void> condition, Reference<AsyncVar<T>> v
 	return Void();
 }
 
-ACTOR Future<Void> lowPriorityDelay(double waitTime);
+Future<Void> lowPriorityDelay(double waitTime);
 
 // Delay after condition is cleared (i.e. equal to false).
 // If during delay, condition changes to true, wait till condition become false again, and repeat.
@@ -877,9 +873,9 @@ ACTOR Future<Void> delayAfterCleared(Reference<AsyncVar<bool>> condition,
 // Same as delayAfterCleared, but use lowPriorityDelay.
 ACTOR Future<Void> lowPriorityDelayAfterCleared(Reference<AsyncVar<bool>> condition, double time);
 
-Future<bool> allTrue(const std::vector<Future<bool>>& all);
+Future<bool> allTrue(std::vector<Future<bool>> all);
 Future<Void> anyTrue(std::vector<Reference<AsyncVar<bool>>> const& input, Reference<AsyncVar<bool>> const& output);
-Future<Void> cancelOnly(std::vector<Future<Void>> const& futures);
+Future<Void> cancelOnly(std::vector<Future<Void>> futures);
 Future<Void> timeoutWarningCollector(FutureStream<Void> const& input,
                                      double const& logDelay,
                                      const char* const& context,
@@ -1026,7 +1022,13 @@ struct QuorumAsyncResultCallback;
 
 template <class T>
 struct GetAllAsyncResultCallback;
+
+template <class T>
+struct GetAllAsyncResultStateCallback;
 } // namespace coro
+
+template <class T>
+struct GetAllAsyncResultState;
 
 template <class T>
 struct QuorumAsyncResult final : SAV<Void> {
@@ -1281,6 +1283,129 @@ struct GetAllAsyncResultCallback final : AsyncResultCallback<typename AsyncResul
 
 namespace coro {
 template <class T>
+struct GetAllAsyncResultStateCallback final : AsyncResultCallback<typename AsyncResult<T>::StoredT> {
+	using StoredT = typename AsyncResult<T>::StoredT;
+
+	AsyncResultState<StoredT>* resultState = nullptr;
+	GetAllAsyncResultState<T>* head = nullptr;
+	int idx = -1;
+
+	void attach(AsyncResult<T>& result, GetAllAsyncResultState<T>* head, int idx);
+
+	void fire(StoredT const& value) override;
+	void fire(StoredT&& value) override;
+	void error(Error error) override;
+	bool isRegistered() const { return resultState != nullptr; }
+	void detach();
+};
+} // namespace coro
+
+template <class T>
+struct GetAllAsyncResultState final : ReferenceCounted<GetAllAsyncResultState<T>> {
+	int remaining;
+	int count;
+	Promise<Void> completion;
+	std::vector<std::optional<T>> values;
+	std::vector<coro::GetAllAsyncResultStateCallback<T>> callbacks;
+
+	explicit GetAllAsyncResultState(int count) : remaining(count), count(count), values(count), callbacks(count) {}
+
+	~GetAllAsyncResultState() { detachPendingCallbacks(); }
+
+	void detachPendingCallbacks() {
+		for (auto& callback : callbacks) {
+			if (callback.isRegistered()) {
+				callback.detach();
+			}
+		}
+	}
+
+	template <class U>
+	void oneSuccess(int idx, U&& value) {
+		if (!completion.canBeSet()) {
+			return;
+		}
+
+		values[idx].emplace(std::forward<U>(value));
+		if (--remaining == 0) {
+			completion.send(Void());
+		}
+	}
+
+	void oneError(Error err) {
+		if (!completion.canBeSet()) {
+			return;
+		}
+
+		detachPendingCallbacks();
+		completion.sendError(err);
+	}
+
+	void attach(std::vector<AsyncResult<T>>& input) {
+		for (int i = 0; i < input.size(); ++i) {
+			auto& item = input[i];
+			if (!completion.canBeSet()) {
+				item = AsyncResult<T>();
+			} else if (item.isReady()) {
+				if (item.isError()) {
+					Error err = item.getError();
+					item = AsyncResult<T>();
+					oneError(err);
+				} else {
+					T value = std::move(item).get();
+					item = AsyncResult<T>();
+					oneSuccess(i, std::move(value));
+				}
+			} else {
+				callbacks[i].attach(item, this, i);
+			}
+		}
+	}
+};
+
+namespace coro {
+template <class T>
+void GetAllAsyncResultStateCallback<T>::attach(AsyncResult<T>& result, GetAllAsyncResultState<T>* head, int idx) {
+	resultState = result.resultState;
+	this->head = head;
+	this->idx = idx;
+	std::move(result).addCallbackAndClear(this);
+}
+
+template <class T>
+void GetAllAsyncResultStateCallback<T>::detach() {
+	detachAsyncResultStateCallback(resultState, this);
+}
+
+template <class T>
+void GetAllAsyncResultStateCallback<T>::fire(StoredT const& value) {
+	Reference<GetAllAsyncResultState<T>> keepAlive = Reference<GetAllAsyncResultState<T>>::addRef(head);
+	if constexpr (std::is_constructible_v<T, StoredT const&>) {
+		T copied(value);
+		detach();
+		head->oneSuccess(idx, std::move(copied));
+	} else {
+		UNREACHABLE();
+	}
+}
+
+template <class T>
+void GetAllAsyncResultStateCallback<T>::fire(StoredT&& value) {
+	Reference<GetAllAsyncResultState<T>> keepAlive = Reference<GetAllAsyncResultState<T>>::addRef(head);
+	detach();
+	head->oneSuccess(idx, std::move(value));
+}
+
+template <class T>
+void GetAllAsyncResultStateCallback<T>::error(Error error) {
+	Reference<GetAllAsyncResultState<T>> keepAlive = Reference<GetAllAsyncResultState<T>>::addRef(head);
+	detach();
+	head->oneError(error);
+}
+} // namespace coro
+
+namespace coro {
+template <class T>
 GetAllAsyncResultCallback<T>::GetAllAsyncResultCallback(AsyncResult<T>& result, GetAllAsyncResult<T>* head, int idx)
   : resultState(result.resultState), head(head), idx(idx) {
 	std::move(result).addCallbackAndClear(this);
@@ -1380,9 +1505,42 @@ Future<std::vector<T>> getAll(std::vector<Future<T>> input) {
 }
 
 template <class T>
+AsyncResult<std::vector<T>> getAllAsync(std::vector<Future<T>> input) {
+	if (input.empty())
+		co_return std::vector<T>();
+	co_await quorum(input, input.size());
+
+	std::vector<T> output;
+	output.reserve(input.size());
+	for (int i = 0; i < input.size(); ++i) {
+		output.push_back(input[i].get());
+	}
+	co_return output;
+}
+
+template <class T>
 // AsyncResult is single-consumer, so getAll requires an explicit ownership
 // transfer from vector callers.
 Future<std::vector<T>> getAll(std::vector<AsyncResult<T>>& input) = delete;
+
+template <class T>
+// Preserve getAll's fail-fast behavior while keeping the aggregate result on a
+// move-preserving AsyncResult path.
+AsyncResult<std::vector<T>> getAllAsync(std::vector<AsyncResult<T>> input) {
+	if (input.empty())
+		co_return std::vector<T>();
+
+	auto aggregateState = makeReference<GetAllAsyncResultState<T>>(input.size());
+	aggregateState->attach(input);
+	co_await aggregateState->completion.getFuture();
+
+	std::vector<T> output;
+	output.reserve(aggregateState->count);
+	for (auto& item : aggregateState->values) {
+		output.push_back(std::move(*item));
+	}
+	co_return output;
+}
 
 template <class T>
 Future<std::vector<T>> getAll(std::vector<AsyncResult<T>>&& input) {
@@ -1733,6 +1891,19 @@ Future<T> waitOrError(Future<T> f, Future<Void> errorSignal) {
 	}
 }
 
+ACTOR template <class T>
+Future<T> waitOrError(FutureStream<T> f, Future<Void> errorSignal) {
+	choose {
+		when(T val = waitNext(f)) {
+			return val;
+		}
+		when(wait(errorSignal)) {
+			ASSERT(false);
+			throw internal_error();
+		}
+	}
+}
+
 // A simple counter designed to track an ongoing count of something, such as how many actors are in a critical section,
 // how many bytes are currently being processed, etc... Can be explicitly released idempotently, or will automatically
 // release when destructed to handle actor ending or errors.
@@ -1757,7 +1928,8 @@ struct ActiveCounter {
 		  : parent(parent), delta(delta), releaseCallback(releaseCallback) {
 			parent->counter += delta;
 		}
-		Releaser(Releaser&& r) noexcept : parent(r.parent), delta(r.delta), releaseCallback(r.releaseCallback) {
+		explicit(false) Releaser(Releaser&& r) noexcept
+		  : parent(r.parent), delta(r.delta), releaseCallback(r.releaseCallback) {
 			r.parent = nullptr;
 		}
 		void operator=(Releaser&& r) {
@@ -1860,7 +2032,7 @@ struct FlowLock : NonCopyable, public ReferenceCounted<FlowLock> {
 		int remaining;
 		Releaser() : lock(0), remaining(0) {}
 		explicit(false) Releaser(FlowLock& lock, int64_t amount = 1) : lock(&lock), remaining(amount) {}
-		Releaser(Releaser&& r) noexcept : lock(r.lock), remaining(r.remaining) { r.remaining = 0; }
+		explicit(false) Releaser(Releaser&& r) noexcept : lock(r.lock), remaining(r.remaining) { r.remaining = 0; }
 		void operator=(Releaser&& r) {
 			if (remaining)
 				lock->release(remaining);
@@ -1952,9 +2124,8 @@ private:
 			throw;
 		}
 		try {
-			double duration = BUGGIFY_WITH_PROB(.001)
-			                      ? deterministicRandom()->random01() * FLOW_KNOBS->BUGGIFY_FLOW_LOCK_RELEASE_DELAY
-			                      : 0.0;
+			double duration =
+			    buggify(.001) ? deterministicRandom()->random01() * FLOW_KNOBS->BUGGIFY_FLOW_LOCK_RELEASE_DELAY : 0.0;
 			choose {
 				when(wait(delay(duration, taskID))) {
 				} // So release()ing the lock doesn't cause arbitrary code to run on the stack
@@ -2029,7 +2200,7 @@ struct NotifiedInt {
 
 	void operator=(int64_t v) { set(v); }
 
-	NotifiedInt(NotifiedInt&& r) noexcept : waiting(std::move(r.waiting)), val(r.val) {}
+	explicit(false) NotifiedInt(NotifiedInt&& r) noexcept : waiting(std::move(r.waiting)), val(r.val) {}
 	void operator=(NotifiedInt&& r) noexcept {
 		waiting = std::move(r.waiting);
 		val = r.val;
@@ -2055,7 +2226,9 @@ struct BoundedFlowLock : NonCopyable, public ReferenceCounted<BoundedFlowLock> {
 		int64_t permitNumber;
 		Releaser() : lock(nullptr), permitNumber(0) {}
 		Releaser(BoundedFlowLock* lock, int64_t permitNumber) : lock(lock), permitNumber(permitNumber) {}
-		Releaser(Releaser&& r) noexcept : lock(r.lock), permitNumber(r.permitNumber) { r.permitNumber = 0; }
+		explicit(false) Releaser(Releaser&& r) noexcept : lock(r.lock), permitNumber(r.permitNumber) {
+			r.permitNumber = 0;
+		}
 		void operator=(Releaser&& r) {
 			if (permitNumber)
 				lock->release(permitNumber);
@@ -2239,8 +2412,8 @@ public:
 class AndFuture {
 public:
 	AndFuture() = default;
-	AndFuture(AndFuture const& f) = default;
-	AndFuture(AndFuture&& f) noexcept = default;
+	explicit(false) AndFuture(AndFuture const& f) = default;
+	explicit(false) AndFuture(AndFuture&& f) noexcept = default;
 	AndFuture& operator=(AndFuture const& f) = default;
 	AndFuture& operator=(AndFuture&& f) noexcept = default;
 

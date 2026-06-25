@@ -51,12 +51,7 @@ if(USE_SANITIZER OR WIN32 OR (CMAKE_SYSTEM_NAME STREQUAL "FreeBSD") OR
 endif()
 env_set(USE_JEMALLOC ${jemalloc_default} BOOL "Link with jemalloc")
 
-# Force-include illumos prelude so libc symbols that collide with FDB
-# globals (yield, etc.) are renamed out of the way before any system
-# header declares them.
 if(CMAKE_SYSTEM_NAME STREQUAL "SunOS")
-  add_compile_options(
-    "$<${is_cxx_compile}:-include${CMAKE_SOURCE_DIR}/flow/include/flow/IllumosPrelude.h>")
   # illumos hides large parts of POSIX/XOPEN/threads behind feature-test
   # gates. Set them globally so headers expose strerror_r, the POSIX
   # pthread_* semantics, and the full <sys/*> type set without per-file

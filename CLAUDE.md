@@ -52,11 +52,11 @@ Two commits on `illumos-port` cover everything platform-specific:
 `git log --stat 978706fa7^..4e75fab16` is the full diff against
 upstream. Key files to know:
 
-- `flow/include/flow/IllumosPrelude.h` — force-included on SunOS to
-  rename libc symbols that collide with FDB globals (`yield`,
+- `flow/include/flow/Platform.h` — the `#if defined(__illumos__)` block at
+  the very top renames libc symbols that collide with FDB globals (`yield`,
   `index_t`) before any system header sees them.
-- `flow/include/flow/IllumosPlatform.h`, `flow/IllumosPlatform.cpp` —
-  kstat / procfs / getloadavg helpers. Called from `flow/Platform.cpp`'s
+- `flow/Platform.cpp` — the `namespace illumos` block (next to `linux_os`)
+  holds the kstat / procfs / getloadavg helpers; called from the file's
   `__illumos__` arms.
 - `cmake/CompileBoost.cmake` + `cmake/boost-illumos-fallocate-fallback.patch`
   — applied automatically on SunOS. Without this, the first
@@ -93,8 +93,8 @@ upstream. Key files to know:
   (or `CMAKE_SYSTEM_NAME STREQUAL "SunOS"` in CMake) so the rest of the
   tree stays bit-identical for non-illumos platforms.
 - When a third porting commit is needed, prefer extending the existing
-  IllumosPrelude / IllumosPlatform files over scattering new `__illumos__`
-  arms across the tree.
+  `namespace illumos` block in `flow/Platform.cpp` (and the prelude block in
+  `flow/Platform.h`) over scattering new `__illumos__` arms across the tree.
 - When you finish a logical chunk, write tests if any apply, then
   commit. Use `BUILDING-illumos.md`'s smoke test as the minimum
   verification gate before claiming "still works".

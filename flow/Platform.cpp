@@ -24,7 +24,6 @@
 #endif // _WIN32
 
 #include "flow/Platform.h"
-#include "flow/IllumosPlatform.h"
 
 #include <algorithm>
 #include <iostream>
@@ -177,6 +176,8 @@ static_assert(std::is_same<boost::asio::ip::address_v6::bytes_type, std::array<u
 #include <sys/utsname.h>
 /* Kernel statistics */
 #include <kstat.h>
+/* getloadavg(3C) */
+#include <sys/loadavg.h>
 /* Loadable-object (ELF) dynamic linking helpers */
 #include <libelf.h>
 /* Network info */
@@ -319,6 +320,277 @@ double getProcessorTimeProcess() {
 	return 0.0;
 #endif
 }
+
+#if defined(__illumos__)
+// illumos / SmartOS system-statistics helpers, the counterpart to the
+// linux_os namespace below.  Read kstat(3KSTAT) and /proc/self/psinfo for the
+// __illumos__ arms of the memory, CPU, network and disk paths.
+namespace illumos {
+
+namespace {
+
+// Read a structured psinfo_t snapshot of the caller. Returns true on success.
+bool readPsinfo(psinfo_t& out) {
+	int fd = ::open("/proc/self/psinfo", O_RDONLY | O_CLOEXEC);
+	if (fd < 0) {
+		return false;
+	}
+	ssize_t n = ::read(fd, &out, sizeof(out));
+	::close(fd);
+	return n == static_cast<ssize_t>(sizeof(out));
+}
+
+// RAII wrapper for a kstat_ctl handle so we always close on scope exit.
+struct KstatCtl {
+	kstat_ctl_t* ctl = nullptr;
+	KstatCtl() : ctl(::kstat_open()) {}
+	~KstatCtl() {
+		if (ctl) ::kstat_close(ctl);
+	}
+	KstatCtl(const KstatCtl&) = delete;
+	KstatCtl& operator=(const KstatCtl&) = delete;
+	explicit operator bool() const { return ctl != nullptr; }
+};
+
+// Look up a named kstat named-data value.
+// Returns the uint64 value on success (all numeric fields coerced), else 0.
+bool readNamedU64(kstat_ctl_t* ctl,
+                  const char* module,
+                  int instance,
+                  const char* name,
+                  const char* stat,
+                  uint64_t& out) {
+	kstat_t* ks = ::kstat_lookup(ctl, const_cast<char*>(module), instance, const_cast<char*>(name));
+	if (!ks || ks->ks_type != KSTAT_TYPE_NAMED) {
+		return false;
+	}
+	if (::kstat_read(ctl, ks, nullptr) == -1) {
+		return false;
+	}
+	kstat_named_t* kn = static_cast<kstat_named_t*>(::kstat_data_lookup(ks, const_cast<char*>(stat)));
+	if (!kn) {
+		return false;
+	}
+	switch (kn->data_type) {
+	case KSTAT_DATA_INT32: out = static_cast<uint64_t>(kn->value.i32); return true;
+	case KSTAT_DATA_UINT32: out = kn->value.ui32; return true;
+	case KSTAT_DATA_INT64: out = static_cast<uint64_t>(kn->value.i64); return true;
+	case KSTAT_DATA_UINT64: out = kn->value.ui64; return true;
+	default: return false;
+	}
+}
+
+} // namespace
+
+// Aggregate idle/user/nice/system ticks across all CPUs from kstat cpu:N:sys.
+// Individual counters are monotonically increasing tick counts (cf. sys/sysinfo.h
+// CPU_*).
+struct CpuTicks {
+	uint64_t idle = 0;
+	uint64_t user = 0;
+	uint64_t nice = 0; // illumos has no `nice` class; kept for schema parity.
+	uint64_t system = 0;
+	uint64_t iowait = 0; // cpu_ticks_wait (I/O wait)
+};
+
+// Sum rbytes64/obytes64 across all link:*:* kstats whose `name` matches
+// the given interface name (or across all links if ifName is empty).
+// Fields left untouched on failure (callers typically preserve prior value).
+struct LinkCounters {
+	uint64_t bytesSent = 0;
+	uint64_t bytesReceived = 0;
+};
+
+// Aggregate kstat tcp:0:tcp:outSegs / retransSegs across all zones visible
+// in the current zone.
+struct TcpCounters {
+	uint64_t outSegs = 0;
+	uint64_t retransSegs = 0;
+};
+
+// Aggregate KSTAT_TYPE_IO counters across every disk-class kstat instance.
+// illumos exposes per-device IO stats as kstat_io_t, which is shaped
+// differently from the named-data kstats used elsewhere here (the data is a
+// single struct, not a name->value map).  We filter by ks_class == "disk" so
+// every backend driver is covered: `sd` (SCSI/ATA), `nvme` (data queues),
+// `blkdev` (virtio-block on SmartOS zones / KVM), `cmdk` (IDE).  Per-directory
+// filtering would require resolving directory -> minor device -> kstat instance
+// and is not done here; on a host with one disk or pool this system-wide
+// aggregate matches what the Linux per-device path returns.
+// Times are in nanoseconds (kstat hrtime_t); convert to ms at the call site.
+struct DiskIo {
+	uint64_t reads = 0; // count
+	uint64_t writes = 0; // count
+	uint64_t bytesRead = 0;
+	uint64_t bytesWritten = 0;
+	uint64_t inFlight = 0; // wait + run queue depth
+	uint64_t serviceTimeNs = 0; // cumulative kstat rtime
+};
+
+// Read pr_rssize (KB) from /proc/self/psinfo and return bytes.
+uint64_t getResidentMemoryBytes() {
+	psinfo_t pi;
+	if (!readPsinfo(pi)) return 0;
+	// pr_rssize is in KB per proc(4).
+	return static_cast<uint64_t>(pi.pr_rssize) * 1024ull;
+}
+
+// Read pr_size (KB) from /proc/self/psinfo and return bytes.
+uint64_t getVirtualMemoryBytes() {
+	psinfo_t pi;
+	if (!readPsinfo(pi)) return 0;
+	return static_cast<uint64_t>(pi.pr_size) * 1024ull;
+}
+
+// Return total physical RAM in bytes (sysconf).
+uint64_t getTotalMemoryBytes() {
+	long pages = ::sysconf(_SC_PHYS_PAGES);
+	long psize = ::sysconf(_SC_PAGESIZE);
+	if (pages <= 0 || psize <= 0) return 0;
+	return static_cast<uint64_t>(pages) * static_cast<uint64_t>(psize);
+}
+
+// Return available (free+cache) memory in bytes via kstat unix:0:system_pages.
+// Returns 0 on failure.
+uint64_t getAvailableMemoryBytes() {
+	KstatCtl k;
+	if (!k) return 0;
+	uint64_t free_pages = 0;
+	if (!readNamedU64(k.ctl, "unix", 0, "system_pages", "freemem", free_pages)) {
+		return 0;
+	}
+	long psize = ::sysconf(_SC_PAGESIZE);
+	if (psize <= 0) return 0;
+	return free_pages * static_cast<uint64_t>(psize);
+}
+
+bool readCpuTicks(CpuTicks& out) {
+	KstatCtl k;
+	if (!k) return false;
+
+	out = CpuTicks{};
+	bool any = false;
+	// Walk every cpu:N:sys record.
+	for (kstat_t* ks = k.ctl->kc_chain; ks != nullptr; ks = ks->ks_next) {
+		if (std::strcmp(ks->ks_module, "cpu") != 0) continue;
+		if (std::strcmp(ks->ks_name, "sys") != 0) continue;
+		if (ks->ks_type != KSTAT_TYPE_NAMED) continue;
+		if (::kstat_read(k.ctl, ks, nullptr) == -1) continue;
+
+		auto fetch = [&](const char* name) -> uint64_t {
+			kstat_named_t* kn = static_cast<kstat_named_t*>(::kstat_data_lookup(ks, const_cast<char*>(name)));
+			if (!kn) return 0;
+			switch (kn->data_type) {
+			case KSTAT_DATA_UINT64: return kn->value.ui64;
+			case KSTAT_DATA_UINT32: return kn->value.ui32;
+			default: return 0;
+			}
+		};
+		// On illumos cpu:N:sys, per-CPU microstate ticks live under cpu_ticks_*.
+		// See uts/common/sys/sysinfo.h and cmd/stat/mpstat/mpstat.c in illumos-gate.
+		out.idle += fetch("cpu_ticks_idle");
+		out.user += fetch("cpu_ticks_user");
+		out.system += fetch("cpu_ticks_kernel");
+		out.iowait += fetch("cpu_ticks_wait");
+		// illumos has no `nice' class; leave out.nice at 0 for schema parity.
+		any = true;
+	}
+	return any;
+}
+
+// Return the number of online CPUs (sysconf _SC_NPROCESSORS_ONLN).
+int32_t getCpuCount() {
+	long n = ::sysconf(_SC_NPROCESSORS_ONLN);
+	if (n <= 0) return 1;
+	return static_cast<int32_t>(n);
+}
+
+// Return the machine's 1/5/15 min load averages via getloadavg(3C).
+// Returns true on success.
+bool getLoadAvg(double* out3) {
+	if (!out3) return false;
+	double tmp[3] = { 0, 0, 0 };
+	if (::getloadavg(tmp, 3) != 3) {
+		return false;
+	}
+	out3[0] = tmp[0];
+	out3[1] = tmp[1];
+	out3[2] = tmp[2];
+	return true;
+}
+
+bool readLinkCounters(const char* ifName, LinkCounters& out) {
+	KstatCtl k;
+	if (!k) return false;
+
+	out = LinkCounters{};
+	bool any = false;
+	for (kstat_t* ks = k.ctl->kc_chain; ks != nullptr; ks = ks->ks_next) {
+		if (std::strcmp(ks->ks_module, "link") != 0) continue;
+		if (ks->ks_type != KSTAT_TYPE_NAMED) continue;
+		if (ifName && *ifName && std::strcmp(ks->ks_name, ifName) != 0) continue;
+		if (::kstat_read(k.ctl, ks, nullptr) == -1) continue;
+
+		auto fetch = [&](const char* name) -> uint64_t {
+			kstat_named_t* kn = static_cast<kstat_named_t*>(::kstat_data_lookup(ks, const_cast<char*>(name)));
+			if (!kn) return 0;
+			if (kn->data_type == KSTAT_DATA_UINT64) return kn->value.ui64;
+			if (kn->data_type == KSTAT_DATA_UINT32) return kn->value.ui32;
+			return 0;
+		};
+		out.bytesSent += fetch("obytes64");
+		out.bytesReceived += fetch("rbytes64");
+		any = true;
+	}
+	return any;
+}
+
+bool readTcpCounters(TcpCounters& out) {
+	KstatCtl k;
+	if (!k) return false;
+
+	out = TcpCounters{};
+	// tcp:0:tcp (numeric names, namespaced under "tcp" module) exposes SNMP
+	// style counters on illumos.  See mib2_tcp in <inet/mib2.h>.
+	uint64_t outSegs = 0, retrans = 0;
+	bool ok1 = readNamedU64(k.ctl, "tcp", 0, "tcp", "outSegs", outSegs);
+	bool ok2 = readNamedU64(k.ctl, "tcp", 0, "tcp", "retransSegs", retrans);
+	if (!ok1 && !ok2) return false;
+	out.outSegs = outSegs;
+	out.retransSegs = retrans;
+	return true;
+}
+
+bool readDiskIo(DiskIo& out) {
+	KstatCtl k;
+	if (!k) return false;
+
+	out = DiskIo{};
+	bool any = false;
+	for (kstat_t* ks = k.ctl->kc_chain; ks != nullptr; ks = ks->ks_next) {
+		if (ks->ks_type != KSTAT_TYPE_IO) continue;
+		// Filter by ks_class == "disk" to catch every driver (sd, nvme,
+		// blkdev for virtio-block, cmdk for IDE) without enumerating
+		// modules.  The nvme module also exposes admin-queue kstats with
+		// different classes — those are skipped by the class check.
+		if (std::strcmp(ks->ks_class, "disk") != 0) continue;
+		if (::kstat_read(k.ctl, ks, nullptr) == -1) continue;
+
+		// KSTAT_TYPE_IO data is a single kstat_io_t pointed at by ks_data.
+		const kstat_io_t* io = static_cast<const kstat_io_t*>(ks->ks_data);
+		out.reads += io->reads;
+		out.writes += io->writes;
+		out.bytesRead += io->nread;
+		out.bytesWritten += io->nwritten;
+		out.inFlight += io->wcnt + io->rcnt;
+		out.serviceTimeNs += static_cast<uint64_t>(io->rtime);
+		any = true;
+	}
+	return any;
+}
+
+} // namespace illumos
+#endif // __illumos__
 
 uint64_t getResidentMemoryUsage() {
 #if defined(__linux__)

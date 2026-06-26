@@ -590,7 +590,7 @@ fdb_install(
   DESTINATION_SUFFIX "/cmake/${targets_export_name}"
   COMPONENT clients)
 
-if(NOT WIN32 AND NOT APPLE) # Linux Only
+if(NOT WIN32 AND NOT APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "SunOS") # Linux Only
 
   fdb_install(
     FILES foundationdb/fdb_c_shim.h

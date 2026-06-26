@@ -477,7 +477,7 @@ if(OPEN_FOR_IDE)
   target_link_libraries(fdb_c_shim_lib_tester PRIVATE fdb_c_shim SimpleOpt fdb_cpp Threads::Threads)
   target_include_directories(fdb_c_shim_lib_tester PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR}/foundationdb/ ${CMAKE_SOURCE_DIR}/flow/include)
 
-elseif(NOT WIN32 AND NOT APPLE) # Linux Only
+elseif(NOT WIN32 AND NOT APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "SunOS") # Linux Only
 
   set(SHIM_LIB_OUTPUT_DIR ${CMAKE_CURRENT_BINARY_DIR})
 
@@ -487,8 +487,7 @@ elseif(NOT WIN32 AND NOT APPLE) # Linux Only
 
   set(IMPLIBSO_SRC_DIR ${CMAKE_SOURCE_DIR}/contrib/Implib.so)
 
-  if(CMAKE_SYSTEM_PROCESSOR STREQUAL "amd64"
-     OR (CMAKE_SYSTEM_PROCESSOR STREQUAL "i386" AND CMAKE_SIZEOF_VOID_P EQUAL 8))
+  if(CMAKE_SYSTEM_PROCESSOR STREQUAL "amd64")
     set(IMPLIBSO_ARCH "x86_64")
   else()
     set(IMPLIBSO_ARCH ${CMAKE_SYSTEM_PROCESSOR})

@@ -436,7 +436,7 @@ target_link_libraries(cpp_workloads PUBLIC fdb_c)
 target_include_directories(c_workloads PUBLIC ${CMAKE_SOURCE_DIR}/bindings/c)
 target_link_libraries(c_workloads PUBLIC fdb_c)
 
-if(NOT WIN32 AND NOT APPLE AND NOT OPEN_FOR_IDE)
+if(NOT WIN32 AND NOT APPLE AND NOT OPEN_FOR_IDE AND NOT CMAKE_SYSTEM_NAME STREQUAL "SunOS")
   # Add the -Wl,--undefined-version flag to the linker command to allow
   # undefined symbols in version scripts. Clang 19 doesn't allow this and would
   # complain with "symbol not defined" errors.

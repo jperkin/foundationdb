@@ -29,9 +29,7 @@
 
 #if defined(__APPLE__) || defined(__FreeBSD__)
 #include <sys/event.h>
-#endif
-
-#if defined(__illumos__)
+#elif defined(__illumos__)
 #include <port.h>
 #include <poll.h>
 #include <time.h>
@@ -80,21 +78,6 @@ void port_signal_handler(int sig) {
 	unsigned char c = (unsigned char)sig;
 	ssize_t n = write(sig_pipe[1], &c, 1);
 	(void)n;
-}
-
-// Arm or re-arm a one-shot FEN (PORT_SOURCE_FILE) watch on path. name_storage
-// keeps fo_name valid for the lifetime of the association.
-static void fen_watch(int port, file_obj* fo, std::string& name_storage, const std::string& path, int events) {
-	struct stat st;
-	if (stat(path.c_str(), &st) < 0) {
-		return;
-	}
-	name_storage = path;
-	fo->fo_name = const_cast<char*>(name_storage.c_str());
-	fo->fo_atime = st.st_atim;
-	fo->fo_mtime = st.st_mtim;
-	fo->fo_ctime = st.st_ctim;
-	port_associate(port, PORT_SOURCE_FILE, (uintptr_t)fo, events, fo);
 }
 #endif
 
@@ -319,7 +302,8 @@ int main(int argc, char** argv) {
 	fcntl(sig_pipe[0], F_SETFD, FD_CLOEXEC);
 	fcntl(sig_pipe[1], F_SETFD, FD_CLOEXEC);
 
-	struct sigaction port_sa = {};
+	struct sigaction port_sa;
+	memset(&port_sa, 0, sizeof(port_sa));
 	port_sa.sa_handler = port_signal_handler;
 	sigemptyset(&port_sa.sa_mask);
 	port_sa.sa_flags = SA_RESTART;
@@ -330,15 +314,17 @@ int main(int argc, char** argv) {
 
 	port_associate(port, PORT_SOURCE_FD, sig_pipe[0], POLLIN, nullptr);
 
-	file_obj confd_fo = {};
-	file_obj conff_fo = {};
-	std::string confd_name;
-	std::string conff_name;
+	file_obj_t confd_fo, conff_fo;
+	std::string confd_name, conff_name;
+	memset(&confd_fo, 0, sizeof(confd_fo));
+	memset(&conff_fo, 0, sizeof(conff_fo));
 
 	// One-shot debounce timer for conf-dir changes, delivered through the port.
-	port_notify_t conf_pn = {};
+	port_notify_t conf_pn;
+	memset(&conf_pn, 0, sizeof(conf_pn));
 	conf_pn.portnfy_port = port;
-	struct sigevent conf_sev = {};
+	struct sigevent conf_sev;
+	memset(&conf_sev, 0, sizeof(conf_sev));
 	conf_sev.sigev_notify = SIGEV_PORT;
 	conf_sev.sigev_value.sival_ptr = &conf_pn;
 	timer_t conf_timer;
@@ -348,8 +334,7 @@ int main(int argc, char** argv) {
 	}
 
 	// Watch the directory holding the configuration file
-	fen_watch(port, &confd_fo, confd_name, confdir, FILE_MODIFIED);
-
+	watch_conf_dir(port, &confd_fo, confd_name, confdir);
 #endif
 
 #ifdef __linux__
@@ -438,8 +423,8 @@ int main(int argc, char** argv) {
 			watch_conf_dir(kq, &confd_fd, confdir);
 #elif defined(__illumos__)
 			load_conf(confpath.c_str(), uid, gid, &normal_mask, watched_fds, &maxfd);
-			fen_watch(port, &conff_fo, conff_name, confpath, FILE_MODIFIED | FILE_ATTRIB);
-			fen_watch(port, &confd_fo, confd_name, confdir, FILE_MODIFIED);
+			watch_conf_file(port, &conff_fo, conff_name, confpath.c_str());
+			watch_conf_dir(port, &confd_fo, confd_name, confdir);
 #endif
 		}
 
@@ -571,16 +556,12 @@ int main(int argc, char** argv) {
 		} else if (pr == 0) {
 			switch (pe.portev_source) {
 			case PORT_SOURCE_FILE:
-				// This could be the conf dir or conf file
 				if (pe.portev_object == (uintptr_t)&confd_fo) {
-					/* Changes in the directory holding the conf file; schedule a future timeout to reset watches and
-					 * reload the conf */
-					struct itimerspec its = {};
+					struct itimerspec its;
+					memset(&its, 0, sizeof(its));
 					its.it_value.tv_nsec = 200 * 1000 * 1000;
 					timer_settime(conf_timer, 0, &its, nullptr);
-					fen_watch(port, &confd_fo, confd_name, confdir, FILE_MODIFIED);
 				} else {
-					/* Direct writes to the conf file; reload! (re-armed by the reload path) */
 					reload = true;
 				}
 				break;

@@ -184,7 +184,7 @@ void monitor_fd(fdb_fd_set list, int fd, int* maxfd, void* cmd) {
 	EV_SET(&ev, fd, EVFILT_READ, EV_ADD, 0, 0, cmd);
 	kevent(list, &ev, 1, nullptr, 0, nullptr); // FIXME: check?
 #elif defined(__illumos__)
-	/* ignore maxfd; PORT_SOURCE_FD is one-shot, re-armed after each read */
+	/* ignore maxfd */
 	port_associate(list, PORT_SOURCE_FD, fd, POLLIN, cmd);
 #endif
 }
@@ -872,6 +872,48 @@ void watch_conf_file(int kq, int* conff_fd, const char* confpath) {
 	if (*conff_fd >= 0) {
 		EV_SET(&ev, *conff_fd, EVFILT_VNODE, EV_ADD | EV_CLEAR, NOTE_WRITE | NOTE_ATTRIB, 0, nullptr);
 		kevent(kq, &ev, 1, nullptr, 0, nullptr);
+	}
+}
+#elif defined(__illumos__)
+// Associate a one-shot FEN (PORT_SOURCE_FILE) watch on name with the port. fo
+// and name must outlive the association: FEN keeps the fo_name pointer.
+static bool fen_associate(int port, file_obj_t* fo, std::string& name, int events) {
+	struct stat st;
+	if (stat(name.c_str(), &st) < 0) {
+		return false;
+	}
+	fo->fo_name = const_cast<char*>(name.c_str());
+	fo->fo_atime = st.st_atim;
+	fo->fo_mtime = st.st_mtim;
+	fo->fo_ctime = st.st_ctim;
+	return port_associate(port, PORT_SOURCE_FILE, (uintptr_t)fo, events, fo) == 0;
+}
+
+void watch_conf_dir(int port, file_obj_t* fo, std::string& name, std::string confdir) {
+	std::string original = confdir;
+	std::string child = confdir;
+	struct stat st;
+
+	/* Find the nearest existing ancestor */
+	while (stat(confdir.c_str(), &st) < 0 && errno == ENOENT) {
+		child = confdir;
+		confdir = parentDirectory(confdir, false);
+	}
+
+	name = confdir;
+	if (fen_associate(port, fo, name, FILE_MODIFIED)) {
+		if (confdir != original) {
+			log_msg(SevInfo, "Watching parent directory of missing directory %s\n", child.c_str());
+		} else {
+			log_msg(SevInfo, "Watching conf dir %s\n", confdir.c_str());
+		}
+	}
+}
+
+void watch_conf_file(int port, file_obj_t* fo, std::string& name, const char* confpath) {
+	name = confpath;
+	if (fen_associate(port, fo, name, FILE_MODIFIED | FILE_ATTRIB)) {
+		log_msg(SevInfo, "Watching conf file %s\n", confpath);
 	}
 }
 #endif

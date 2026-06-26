@@ -39,6 +39,8 @@
 #include <sys/inotify.h>
 #include <sys/time.h>
 #include <linux/limits.h>
+#elif defined(__illumos__)
+#include <port.h>
 #endif
 
 #include "fdbclient/SimpleIni.h"
@@ -97,6 +99,9 @@ void start_process(Command* cmd, ProcessID id, uid_t uid, gid_t gid, int delay, 
 #if defined(__APPLE__) || defined(__FreeBSD__)
 void watch_conf_dir(int kq, int* confd_fd, std::string confdir);
 void watch_conf_file(int kq, int* conff_fd, const char* confpath);
+#elif defined(__illumos__)
+void watch_conf_dir(int port, file_obj_t* fo, std::string& name, std::string confdir);
+void watch_conf_file(int port, file_obj_t* fo, std::string& name, const char* confpath);
 #endif
 
 struct EnvVarUtils {

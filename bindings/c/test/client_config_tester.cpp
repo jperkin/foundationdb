@@ -37,7 +37,7 @@
 #include <unordered_map>
 #include "fdbclient/FDBOptions.g.h"
 
-#if (defined(__linux__) || defined(__APPLE__) || defined(__FreeBSD__))
+#if (defined(__linux__) || defined(__APPLE__) || defined(__FreeBSD__) || defined(__illumos__))
 #include <unistd.h>
 #elif defined(_WIN32)
 #include <process.h>

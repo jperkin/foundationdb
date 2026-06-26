@@ -194,7 +194,7 @@ public:
 		sav = nullptr;
 		return ptr;
 	}
-	explicit ReplyPromise<T>(SAV<T>* ptr) : sav(static_cast<NetSAV<T>*>(ptr)) {}
+	explicit ReplyPromise(SAV<T>* ptr) : sav(static_cast<NetSAV<T>*>(ptr)) {}
 
 	int getFutureReferenceCount() const { return sav->getFutureReferenceCount(); }
 	int getPromiseReferenceCount() const { return sav->getPromiseReferenceCount(); }

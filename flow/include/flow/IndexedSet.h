@@ -91,7 +91,7 @@ private: // Forward-declare IndexedSet::Node because Clang is much stricter abou
 	struct IteratorImpl {
 		typename std::conditional_t<isConst, const IndexedSet::Node, IndexedSet::Node>* node;
 
-		explicit IteratorImpl<isConst>(const IteratorImpl<!isConst>& nonConstIter) : node(nonConstIter.node) {
+		explicit IteratorImpl(const IteratorImpl<!isConst>& nonConstIter) : node(nonConstIter.node) {
 			static_assert(isConst);
 		}
 

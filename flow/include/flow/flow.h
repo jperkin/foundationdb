@@ -1147,7 +1147,7 @@ public:
 		sav = nullptr;
 		return ptr;
 	}
-	explicit Promise<T>(SAV<T>* ptr) : sav(ptr) {}
+	explicit Promise(SAV<T>* ptr) : sav(ptr) {}
 
 	int getFutureReferenceCount() const { return sav->getFutureReferenceCount(); }
 	int getPromiseReferenceCount() const { return sav->getPromiseReferenceCount(); }

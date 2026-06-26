@@ -451,8 +451,8 @@ uint64_t getTotalMemoryBytes() {
 	return static_cast<uint64_t>(pages) * static_cast<uint64_t>(psize);
 }
 
-// Return available (free+cache) memory in bytes via kstat unix:0:system_pages.
-// Returns 0 on failure.
+// Return available memory in bytes: free pages plus the reclaimable part of the
+// ZFS ARC.  Returns 0 on failure.
 uint64_t getAvailableMemoryBytes() {
 	KstatCtl k;
 	if (!k) return 0;
@@ -462,7 +462,16 @@ uint64_t getAvailableMemoryBytes() {
 	}
 	long psize = ::sysconf(_SC_PAGESIZE);
 	if (psize <= 0) return 0;
-	return free_pages * static_cast<uint64_t>(psize);
+	uint64_t available = free_pages * static_cast<uint64_t>(psize);
+	// The ZFS ARC is reclaimable down to its c_min target; counting only freemem
+	// would badly understate available memory on ZFS hosts.  arcstats is absent
+	// on non-ZFS systems, in which case we fall back to freemem alone.
+	uint64_t arcSize = 0, arcMin = 0;
+	if (readNamedU64(k.ctl, "zfs", 0, "arcstats", "size", arcSize) &&
+	    readNamedU64(k.ctl, "zfs", 0, "arcstats", "c_min", arcMin) && arcSize > arcMin) {
+		available += arcSize - arcMin;
+	}
+	return available;
 }
 
 bool readCpuTicks(CpuTicks& out) {

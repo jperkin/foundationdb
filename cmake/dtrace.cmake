@@ -18,16 +18,15 @@ function(dtrace_header provider out_header)
     DEPENDS ${provider})
 endfunction()
 
-# Turn ${lib}'s probe objects into a DOF object, returning its path in ${out}.
-function(dtrace_provider_object out lib provider)
+# Build a DOF object from ${lib}'s probe objects and add it to the archive, so
+# everything that links ${lib} resolves the probe stubs.  The objects are copied
+# first because dtrace -G rewrites the ones it reads; the shell globs *.o at
+# build time, which configure-time file(GLOB) cannot.
+function(dtrace_instrument lib provider)
   set(dof ${CMAKE_CURRENT_BINARY_DIR}/${lib}_dtrace.o)
   set(objdir ${CMAKE_CURRENT_BINARY_DIR}/CMakeFiles/${lib}.dir)
   set(tmp ${CMAKE_CURRENT_BINARY_DIR}/${lib}_dtrace.objs)
-  # Copy first because dtrace -G rewrites the objects it reads; the shell globs
-  # *.o at build time, which configure-time file(GLOB) cannot.
   add_custom_command(
-    OUTPUT ${dof}
-    COMMAND sh -c "rm -rf ${tmp} && mkdir ${tmp} && cp ${objdir}/*.o ${tmp}/ && ${DTRACE} ${DTRACE_FLAGS} -G -s ${provider} -o ${dof} ${tmp}/*.o"
-    DEPENDS ${lib} ${provider})
-  set(${out} ${dof} PARENT_SCOPE)
+    TARGET ${lib} POST_BUILD
+    COMMAND sh -c "rm -rf ${tmp} && mkdir ${tmp} && cp ${objdir}/*.o ${tmp}/ && ${DTRACE} ${DTRACE_FLAGS} -G -s ${provider} -o ${dof} ${tmp}/*.o && ${CMAKE_AR} rs $<TARGET_FILE:${lib}> ${dof}")
 endfunction()

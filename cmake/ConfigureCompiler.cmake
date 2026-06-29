@@ -45,11 +45,12 @@ set(jemalloc_default ON)
 # We don't want to use jemalloc on Windows
 # Nor on FreeBSD, where jemalloc is the default system allocator
 # Nor on illumos, where libumem is preferred
-if(USE_SANITIZER OR WIN32 OR (CMAKE_SYSTEM_NAME STREQUAL "FreeBSD") OR
-    (CMAKE_SYSTEM_NAME STREQUAL "SunOS") OR APPLE)
+if(USE_SANITIZER OR WIN32 OR (CMAKE_SYSTEM_NAME STREQUAL "FreeBSD") OR APPLE
+    OR CMAKE_SYSTEM_NAME STREQUAL "SunOS")
   set(jemalloc_default OFF)
 endif()
 env_set(USE_JEMALLOC ${jemalloc_default} BOOL "Link with jemalloc")
+env_set(USE_CUSTOM_JEMALLOC OFF BOOL "Manually download and build jemalloc")
 
 if(CMAKE_SYSTEM_NAME STREQUAL "SunOS")
   # Force-include the illumos prelude so the libc `yield` symbol is renamed out
@@ -70,7 +71,6 @@ if(CMAKE_SYSTEM_NAME STREQUAL "SunOS")
   set_property(GLOBAL PROPERTY JOB_POOLS link_pool=1)
   set(CMAKE_JOB_POOL_LINK link_pool)
 endif()
-env_set(USE_CUSTOM_JEMALLOC OFF BOOL "Manually download and build jemalloc")
 
 if(USE_LIBCXX AND STATIC_LINK_LIBCXX AND NOT USE_LD STREQUAL "LLD")
   message(FATAL_ERROR "Unsupported configuration: STATIC_LINK_LIBCXX with libc++ only works if USE_LD=LLD")
@@ -390,7 +390,7 @@ else()
   # Tentatively re-enabling vector instructions
   set(USE_AVX512F OFF CACHE BOOL "Enable AVX 512F instructions")
   if (USE_AVX512F)
-    if (CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "^x86" OR (CMAKE_HOST_SYSTEM_PROCESSOR STREQUAL "i386" AND CMAKE_SIZEOF_VOID_P EQUAL 8))
+    if (CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "^x86")
       add_compile_options($<${is_cxx_compile}:-mavx512f>)
     elseif(USE_VALGRIND)
       message(STATUS "USE_VALGRIND=ON make USE_AVX OFF to satisfy valgrind analysis requirement")
@@ -402,7 +402,7 @@ else()
   endif()
   set(USE_AVX ON CACHE BOOL "Enable AVX instructions")
   if (USE_AVX)
-    if (CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "^x86" OR (CMAKE_HOST_SYSTEM_PROCESSOR STREQUAL "i386" AND CMAKE_SIZEOF_VOID_P EQUAL 8))
+    if (CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "^x86")
       add_compile_options($<${is_cxx_compile}:-mavx>)
     elseif(USE_VALGRIND)
       message(STATUS "USE_VALGRIND=ON make USE_AVX OFF to satisfy valgrind analysis requirement")

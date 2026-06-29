@@ -102,6 +102,20 @@ add_flow_target(STATIC_LIBRARY NAME flow_sampling SRCS ${FLOW_SRCS})
 add_dependencies(flow ProtocolVersion)
 add_dependencies(flow_sampling ProtocolVersion)
 
+# Generate the probe header before flow compiles, then build a DOF object from
+# flow's probe objects and propagate it to everything that links flow.
+if(DTRACE_PROVIDER)
+  dtrace_header(${CMAKE_CURRENT_SOURCE_DIR}/foundationdb.d
+                ${CMAKE_CURRENT_BINARY_DIR}/include/flow/foundationdb_probes.h)
+  add_custom_target(foundationdb_probes_h
+    DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/include/flow/foundationdb_probes.h)
+  foreach(flow_lib flow flow_sampling)
+    add_dependencies(${flow_lib} foundationdb_probes_h)
+    dtrace_provider_object(${flow_lib}_dof ${flow_lib} ${CMAKE_CURRENT_SOURCE_DIR}/foundationdb.d)
+    target_link_libraries(${flow_lib} INTERFACE ${${flow_lib}_dof})
+  endforeach()
+endif()
+
 if(FLOW_USE_ZSTD)
   include(CompileZstd)
   compile_zstd()

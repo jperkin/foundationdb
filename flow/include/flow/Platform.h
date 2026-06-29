@@ -870,7 +870,29 @@ EXTERNC void setProfilingEnabled(int enabled);
 #endif
 
 // DTrace probing
-#if defined(DTRACE_PROBES)
+#if defined(DTRACE_PROBES) && defined(DTRACE_PROVIDER)
+// dtrace -h names the probe macros FOUNDATIONDB_<UPPER>(); the preprocessor
+// cannot derive that from the lower-case name, so bridge each one.
+#include "flow/foundationdb_probes.h"
+#define FDB_TRACE_PROBE_STRING_CONCAT2(h, t) h##t
+#define FDB_TRACE_PROBE_STRING_CONCAT(h, t) FDB_TRACE_PROBE_STRING_CONCAT2(h, t)
+#define FDB_TRACE_PROBE(name, ...) FDB_TRACE_PROBE_##name(__VA_ARGS__)
+#define FDB_TRACE_PROBE_run_loop_begin(...) FOUNDATIONDB_RUN_LOOP_BEGIN()
+#define FDB_TRACE_PROBE_run_loop_yield(...) FOUNDATIONDB_RUN_LOOP_YIELD()
+#define FDB_TRACE_PROBE_run_loop_tasks_start(...) FOUNDATIONDB_RUN_LOOP_TASKS_START(__VA_ARGS__)
+#define FDB_TRACE_PROBE_run_loop_done(...) FOUNDATIONDB_RUN_LOOP_DONE(__VA_ARGS__)
+#define FDB_TRACE_PROBE_run_loop_ready_timers(...) FOUNDATIONDB_RUN_LOOP_READY_TIMERS(__VA_ARGS__)
+#define FDB_TRACE_PROBE_run_loop_thread_ready(...) FOUNDATIONDB_RUN_LOOP_THREAD_READY(__VA_ARGS__)
+#define FDB_TRACE_PROBE_actor_create(...) FOUNDATIONDB_ACTOR_CREATE(__VA_ARGS__)
+#define FDB_TRACE_PROBE_actor_destroy(...) FOUNDATIONDB_ACTOR_DESTROY(__VA_ARGS__)
+#define FDB_TRACE_PROBE_actor_enter(...) FOUNDATIONDB_ACTOR_ENTER(__VA_ARGS__)
+#define FDB_TRACE_PROBE_actor_exit(...) FOUNDATIONDB_ACTOR_EXIT(__VA_ARGS__)
+
+extern void fdb_probe_actor_create(const char* name, unsigned long id);
+extern void fdb_probe_actor_destroy(const char* name, unsigned long id);
+extern void fdb_probe_actor_enter(const char* name, unsigned long, int index);
+extern void fdb_probe_actor_exit(const char* name, unsigned long, int index);
+#elif defined(DTRACE_PROBES)
 #include <sys/sdt.h>
 #define FDB_TRACE_PROBE_STRING_EXPAND(x) x
 #define FDB_TRACE_PROBE_STRING_CONCAT2(h, t) h##t

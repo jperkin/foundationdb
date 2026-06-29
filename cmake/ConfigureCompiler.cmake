@@ -595,11 +595,15 @@ else()
   check_symbol_exists(DTRACE_PROBE sys/sdt.h SUPPORT_DTRACE)
   check_symbol_exists(aligned_alloc stdlib.h HAS_ALIGNED_ALLOC)
   message(STATUS "Has aligned_alloc: ${HAS_ALIGNED_ALLOC}")
-  # illumos ships real DTrace which requires generating USDT stubs via
-  # `dtrace -G`; FDB's build currently uses the Linux/SystemTap inline-asm
-  # approach so we disable the probes on SunOS for the initial port.
-  if(CMAKE_SYSTEM_NAME STREQUAL "SunOS")
-    set(SUPPORT_DTRACE 0)
+  # When <sys/sdt.h> has no SystemTap-style DTRACE_PROBE macro (the check above
+  # fails) but dtrace(1) is present, build the probes from a provider definition
+  # via dtrace -h / -G instead.  See cmake/dtrace.cmake.
+  if(NOT SUPPORT_DTRACE)
+    include(dtrace)
+    if(DTRACE)
+      set(SUPPORT_DTRACE ON)
+      set(DTRACE_PROVIDER ON)
+    endif()
   endif()
   if((SUPPORT_DTRACE) AND (USE_DTRACE))
     set(DTRACE_PROBES 1)

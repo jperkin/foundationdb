@@ -29,6 +29,7 @@
 #  define VALGRIND 1
 # endif
 # cmakedefine DTRACE_PROBES
+# cmakedefine DTRACE_PROVIDER
 # cmakedefine HAS_ALIGNED_ALLOC
 # cmakedefine USE_JEMALLOC
 #endif // WIN32

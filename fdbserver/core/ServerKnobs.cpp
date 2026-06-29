@@ -268,8 +268,10 @@ void ServerKnobs::initialize(Randomize randomize, ClientKnobs* clientKnobs, IsSi
 	// Hard cap on total relocations DD tracks (queued + in-flight). 1000 corresponds to a 500-server
 	// cluster with two concurrent shard moves per storage server.  We have observed large clusters doing
 	// 25-30GB in flight, or closer to 100 shards at a time, so this has plenty of margin of safety
-	// built in.
-	init( DD_MAX_PIPELINE_MOVES,                                1000 ); if( randomize && buggify() ) DD_MAX_PIPELINE_MOVES = 5;
+	// built in.  For simulation, we don't really know how many servers there are, but 10 seems like a good
+	// guess (thus 20 moves).  Do not buggify this too small: testing under artificial scarcity results in
+	// uninteresting degenerate cases.
+	init( DD_MAX_PIPELINE_MOVES,                                1000 ); if( randomize && buggify() ) DD_MAX_PIPELINE_MOVES = 20;
 	init( DD_REBALANCE_RESET_AMOUNT,                              30 );
 	init( INFLIGHT_PENALTY_HEALTHY,                              1.0 );
 	init( INFLIGHT_PENALTY_UNHEALTHY,                          500.0 );
@@ -817,6 +819,8 @@ void ServerKnobs::initialize(Randomize randomize, ClientKnobs* clientKnobs, IsSi
 	init( TAG_THROTTLE_MAX_EMPTY_QUEUE_BUDGET,                1000.0 );
 	init( START_TRANSACTION_MAX_QUEUE_SIZE,                      1e6 ); if ( randomize && buggify() ) START_TRANSACTION_MAX_QUEUE_SIZE = 1000;
 	init( KEY_LOCATION_MAX_QUEUE_SIZE,                           1e6 );
+	init( GRV_PROXY_PROGRESS_CHECK_INTERVAL,                     0.5 );
+	init( GRV_PROXY_MAX_MISSED_PROGRESS_CHECKS,                   10 );
 
 	init( COMMIT_PROXY_LIVENESS_TIMEOUT,                        20.0 );
 	init( COMMIT_PROXY_MAX_LIVENESS_TIMEOUT,                   600.0 ); if ( randomize && buggify() ) COMMIT_PROXY_MAX_LIVENESS_TIMEOUT = 20.0;

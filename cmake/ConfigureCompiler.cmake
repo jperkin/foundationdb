@@ -595,14 +595,17 @@ else()
   check_symbol_exists(DTRACE_PROBE sys/sdt.h SUPPORT_DTRACE)
   check_symbol_exists(aligned_alloc stdlib.h HAS_ALIGNED_ALLOC)
   message(STATUS "Has aligned_alloc: ${HAS_ALIGNED_ALLOC}")
-  # When <sys/sdt.h> has no SystemTap-style DTRACE_PROBE macro (the check above
-  # fails) but dtrace(1) is present, build the probes from a provider definition
-  # via dtrace -h / -G instead.  See cmake/dtrace.cmake.
-  if(NOT SUPPORT_DTRACE)
+  # DTRACE_PROBE exists in both SystemTap's <sys/sdt.h> (self-contained probes)
+  # and the Solaris/illumos one (probes need a dtrace -h header and a dtrace -G
+  # provider object).  STAP_PROBE is SystemTap-only, so its absence selects the
+  # provider path.  See cmake/dtrace.cmake.
+  check_symbol_exists(STAP_PROBE sys/sdt.h HAVE_SYSTEMTAP_SDT)
+  if(SUPPORT_DTRACE AND NOT HAVE_SYSTEMTAP_SDT)
     include(dtrace)
     if(DTRACE)
-      set(SUPPORT_DTRACE ON)
       set(DTRACE_PROVIDER ON)
+    else()
+      set(SUPPORT_DTRACE 0)
     endif()
   endif()
   if((SUPPORT_DTRACE) AND (USE_DTRACE))

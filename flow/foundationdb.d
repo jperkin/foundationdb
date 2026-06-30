@@ -29,8 +29,8 @@ provider foundationdb {
 	probe run_loop_done(int queue_size);
 	probe run_loop_ready_timers(int num_timers);
 	probe run_loop_thread_ready(int num_ready);
-	probe actor_create(char* name, unsigned long id);
-	probe actor_destroy(char* name, unsigned long id);
-	probe actor_enter(char* name, unsigned long id, int index);
-	probe actor_exit(char* name, unsigned long id, int index);
+	probe actor_create(const char* name, unsigned long id);
+	probe actor_destroy(const char* name, unsigned long id);
+	probe actor_enter(const char* name, unsigned long id, int index);
+	probe actor_exit(const char* name, unsigned long id, int index);
 };

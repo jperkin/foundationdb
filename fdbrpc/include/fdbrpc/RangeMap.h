@@ -96,7 +96,7 @@ private:
 		using reference = self_t&;
 
 		IteratorImpl() {} // singular
-		explicit IteratorImpl<isConst>(const value_type it) : it(it) {}
+		explicit IteratorImpl(const value_type it) : it(it) {}
 
 		Key const& begin() { return it->key; }
 		Key const& end() {

@@ -2296,7 +2296,9 @@ void parse(StringRef& val, time_t& t) {
 			throw std::invalid_argument("failed to parse ISO 8601 datetime");
 		}
 		int h = 0, m = 0;
-		if (std::sscanf(rest + 1, "%2d%*[:]%2d", &h, &m) < 1) { // NOLINT
+		// Accept extended (+HH:MM), compact (+HHMM) and hour-only (+HH) offsets.
+		if (std::sscanf(rest + 1, "%2d:%2d", &h, &m) != 2 && std::sscanf(rest + 1, "%2d%2d", &h, &m) != 2 &&
+		    std::sscanf(rest + 1, "%2d", &h) != 1) {
 			throw std::invalid_argument("failed to parse ISO 8601 datetime");
 		}
 		offsetSeconds = sign * (h * 3600 + m * 60);

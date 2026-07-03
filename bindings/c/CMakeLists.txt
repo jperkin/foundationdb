@@ -416,7 +416,7 @@ set_target_properties(c_workloads PROPERTIES
   LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/share/foundationdb")
 target_link_libraries(c_workloads PUBLIC fdb_c)
 
-if(NOT WIN32 AND NOT APPLE AND NOT OPEN_FOR_IDE)
+if(NOT WIN32 AND NOT APPLE AND NOT OPEN_FOR_IDE AND NOT CMAKE_SYSTEM_NAME STREQUAL "SunOS")
   # Add the -Wl,--undefined-version flag to the linker command to allow
   # undefined symbols in version scripts. Clang 19 doesn't allow this and would
   # complain with "symbol not defined" errors.
@@ -448,7 +448,7 @@ if(OPEN_FOR_IDE)
   target_link_libraries(fdb_c_shim_lib_tester PRIVATE fdb_c_shim SimpleOpt fdb_cpp Threads::Threads)
   target_include_directories(fdb_c_shim_lib_tester PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR}/foundationdb/ ${CMAKE_SOURCE_DIR}/flow/include)
 
-elseif(NOT WIN32 AND NOT APPLE) # Linux Only
+elseif(NOT WIN32 AND NOT APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "SunOS") # Linux Only
 
   set(SHIM_LIB_OUTPUT_DIR ${CMAKE_CURRENT_BINARY_DIR})
 
@@ -554,7 +554,7 @@ fdb_install(
   DESTINATION_SUFFIX "/cmake/${targets_export_name}"
   COMPONENT clients)
 
-if(NOT WIN32 AND NOT APPLE) # Linux Only
+if(NOT WIN32 AND NOT APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "SunOS") # Linux Only
 
   fdb_install(
     FILES foundationdb/fdb_c_shim.h

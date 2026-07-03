@@ -21,6 +21,12 @@
 #include "fdbserver/CoroFlow.h"
 #include "flow/ActorCollection.h"
 #include "Coro.h"
+#if defined(__illumos__)
+// Coro.h pulls in <ucontext.h> -> <sys/regset.h>, whose ERR register macro
+// collides with SpanStatus::ERR in fdbclient/Tracing.h. Drop it, the same way the
+// <windows.h> min/max macros are undone elsewhere in the tree.
+#undef ERR
+#endif
 #include "flow/TDMetric.actor.h"
 #include "fdbrpc/simulator.h"
 #include "fdbrpc/SimulatorProcessInfo.h"

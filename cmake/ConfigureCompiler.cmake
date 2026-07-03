@@ -43,13 +43,14 @@ if(USE_SANITIZER OR WIN32 OR (CMAKE_SYSTEM_NAME STREQUAL "FreeBSD") OR
 endif()
 env_set(USE_JEMALLOC ${jemalloc_default} BOOL "Link with jemalloc")
 
-# Force-include illumos prelude so libc symbols that collide with FDB
-# globals (yield, etc.) are renamed out of the way before any system
-# header declares them.
 if(CMAKE_SYSTEM_NAME STREQUAL "SunOS")
   # 8.0 defines is_cxx_compile globally; 7.3 does not, so define it here for the
   # prelude force-include (true for C and C++ TUs, not ASM).
   set(is_cxx_compile "$<OR:$<COMPILE_LANGUAGE:CXX>,$<COMPILE_LANGUAGE:C>>")
+  # Force-include the illumos prelude so the libc `yield` symbol is renamed out
+  # of the way before any system header can declare it.  This must precede every
+  # other include, which a normal #include cannot guarantee; see
+  # flow/include/flow/IllumosPrelude.h.
   add_compile_options(
     "$<${is_cxx_compile}:-include${CMAKE_SOURCE_DIR}/flow/include/flow/IllumosPrelude.h>")
   # illumos hides large parts of POSIX/XOPEN/threads behind feature-test

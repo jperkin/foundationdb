@@ -42,6 +42,7 @@ if(USE_SANITIZER OR WIN32 OR (CMAKE_SYSTEM_NAME STREQUAL "FreeBSD") OR
   set(jemalloc_default OFF)
 endif()
 env_set(USE_JEMALLOC ${jemalloc_default} BOOL "Link with jemalloc")
+env_set(USE_CUSTOM_JEMALLOC OFF BOOL "Manually download and build jemalloc")
 
 if(CMAKE_SYSTEM_NAME STREQUAL "SunOS")
   # 8.0 defines is_cxx_compile globally; 7.3 does not, so define it here for the
@@ -65,7 +66,6 @@ if(CMAKE_SYSTEM_NAME STREQUAL "SunOS")
   set_property(GLOBAL PROPERTY JOB_POOLS link_pool=1)
   set(CMAKE_JOB_POOL_LINK link_pool)
 endif()
-env_set(USE_CUSTOM_JEMALLOC OFF BOOL "Manually download and build jemalloc")
 
 if(USE_LIBCXX AND STATIC_LINK_LIBCXX AND NOT USE_LD STREQUAL "LLD")
   message(FATAL_ERROR "Unsupported configuration: STATIC_LINK_LIBCXX with libc++ only works if USE_LD=LLD")

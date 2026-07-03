@@ -81,11 +81,7 @@ if(APPLE)
   add_custom_target(exported_symbols_list DEPENDS ${symbols})
   add_dependencies(fdb_c exported_symbols_list)
   target_link_options(fdb_c PRIVATE "LINKER:-no_weak_exports,-exported_symbols_list,${symbols}")
-elseif(WIN32)
-elseif(CMAKE_SYSTEM_NAME STREQUAL "SunOS")
-  # illumos ld(1) has a different mapfile syntax and lacks -z noexecstack
-  # (stacks are non-executable by default).  Skip the GNU-ld flags here;
-  # symbol hiding for fdb_c can be revisited with a native mapfile later.
+elseif(WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "SunOS")
 else()
   if(NOT USE_UBSAN)
     # For ubsan we need to export type information for the vptr check to work.

@@ -112,13 +112,22 @@ function(strip_debug_symbols target)
     endif()
   endif()
   set(out_file "${path}/${out_name}")
-  list(APPEND strip_command -o "${out_file}")
-  add_custom_command(OUTPUT "${out_file}"
-    COMMAND ${strip_command} $<TARGET_FILE:${target}>
-    DEPENDS ${target}
-    COMMENT "Stripping symbols from ${target}")
+  if(CMAKE_SYSTEM_NAME STREQUAL "SunOS")
+    # illumos strip(1) uses -x, has no -o, and strips in place; copy then strip the copy
+    add_custom_command(OUTPUT "${out_file}"
+      COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:${target}> "${out_file}"
+      COMMAND strip -x "${out_file}"
+      DEPENDS ${target}
+      COMMENT "Stripping symbols from ${target}")
+  else()
+    list(APPEND strip_command -o "${out_file}")
+    add_custom_command(OUTPUT "${out_file}"
+      COMMAND ${strip_command} $<TARGET_FILE:${target}>
+      DEPENDS ${target}
+      COMMENT "Stripping symbols from ${target}")
+  endif()
   add_custom_target(strip_only_${target} DEPENDS ${out_file})
-  if(is_exec AND NOT APPLE)
+  if(is_exec AND NOT APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "SunOS")
     add_custom_command(OUTPUT "${out_file}.debug"
       DEPENDS strip_only_${target}
       COMMAND objcopy --verbose --only-keep-debug $<TARGET_FILE:${target}> "${out_file}.debug"

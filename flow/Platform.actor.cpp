@@ -1516,7 +1516,8 @@ void getMachineLoad(uint64_t& idleTime, uint64_t& totalTime, bool logDetails) {
 	INJECT_FAULT(platform_error, "getMachineLoad");
 	illumos::CpuTicks ct;
 	if (illumos::readCpuTicks(ct)) {
-		idleTime = ct.idle;
+		// I/O wait is idle CPU, as on the Linux path (idleTime = idle + iowait).
+		idleTime = ct.idle + ct.iowait;
 		totalTime = ct.idle + ct.user + ct.system + ct.iowait;
 	}
 }

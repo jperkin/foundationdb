@@ -26,7 +26,7 @@
 #endif
 
 #if (defined(__linux__) || defined(__APPLE__) || defined(__FreeBSD__) || \
-     (defined(__sun) && defined(__SVR4)))
+     defined(__illumos__))
 #define __unixish__ 1
 #endif
 

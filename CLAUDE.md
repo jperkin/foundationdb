@@ -57,7 +57,7 @@ upstream. Key files to know:
   `index_t`) before any system header sees them.
 - `flow/include/flow/IllumosPlatform.h`, `flow/IllumosPlatform.cpp` —
   kstat / procfs / getloadavg helpers. Called from `flow/Platform.cpp`'s
-  `__sun` arms.
+  `__illumos__` arms.
 - `cmake/CompileBoost.cmake` + `cmake/boost-illumos-fallocate-fallback.patch`
   — applied automatically on SunOS. Without this, the first
   `managed_shared_memory` creator throws `EINVAL` from
@@ -89,11 +89,11 @@ upstream. Key files to know:
 ## Workflow
 
 - All illumos changes go on `illumos-port`. Keep the diff against
-  upstream `main` minimal and gated on `defined(__sun) && defined(__SVR4)`
+  upstream `main` minimal and gated on `defined(__illumos__)`
   (or `CMAKE_SYSTEM_NAME STREQUAL "SunOS"` in CMake) so the rest of the
   tree stays bit-identical for non-illumos platforms.
 - When a third porting commit is needed, prefer extending the existing
-  IllumosPrelude / IllumosPlatform files over scattering new `__sun`
+  IllumosPrelude / IllumosPlatform files over scattering new `__illumos__`
   arms across the tree.
 - When you finish a logical chunk, write tests if any apply, then
   commit. Use `BUILDING-illumos.md`'s smoke test as the minimum

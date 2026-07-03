@@ -14,7 +14,7 @@
 
 #include "flow/IllumosPlatform.h"
 
-#if defined(__sun) && defined(__SVR4)
+#if defined(__illumos__)
 
 #include <cerrno>
 #include <cstdio>
@@ -239,4 +239,4 @@ bool readDiskIo(DiskIo& out) {
 
 } // namespace illumos
 
-#endif // __sun && __SVR4
+#endif // __illumos__

@@ -226,34 +226,45 @@ function(stage_correctness_package)
   endforeach()
 
   list(APPEND package_files ${STAGE_OUT_DIR}/bin/fdbserver
-                            ${STAGE_OUT_DIR}/bin/coverage.fdbserver.xml
-                            ${STAGE_OUT_DIR}/bin/coverage.fdbclient.xml
-                            ${STAGE_OUT_DIR}/bin/coverage.fdbrpc.xml
-                            ${STAGE_OUT_DIR}/bin/coverage.flow.xml
-                            ${STAGE_OUT_DIR}/bin/TestHarness.exe
-                            ${STAGE_OUT_DIR}/bin/TraceLogHelper.dll
                             ${STAGE_OUT_DIR}/CMakeCache.txt
     )
 
+  set(package_dependencies ${CMAKE_BINARY_DIR}/CMakeCache.txt
+                           ${CMAKE_BINARY_DIR}/packages/bin/fdbserver)
+  set(copy_sources ${CMAKE_BINARY_DIR}/packages/bin/fdbserver)
+  if(NOT FDB_USE_PYTHON_CODEGEN)
+    # When building with C#/mono, include coverage XML and C# test harness
+    # files in the correctness package.  These are skipped on platforms that
+    # use the Python code-gen path (e.g. illumos) because mono is unavailable
+    # and the coverage tool is not built there.
+    list(APPEND package_files
+      ${STAGE_OUT_DIR}/bin/coverage.fdbserver.xml
+      ${STAGE_OUT_DIR}/bin/coverage.fdbclient.xml
+      ${STAGE_OUT_DIR}/bin/coverage.fdbrpc.xml
+      ${STAGE_OUT_DIR}/bin/coverage.flow.xml
+      ${STAGE_OUT_DIR}/bin/TestHarness.exe
+      ${STAGE_OUT_DIR}/bin/TraceLogHelper.dll)
+    list(APPEND package_dependencies
+      ${CMAKE_BINARY_DIR}/bin/coverage.fdbserver.xml
+      ${CMAKE_BINARY_DIR}/lib/coverage.fdbclient.xml
+      ${CMAKE_BINARY_DIR}/lib/coverage.fdbrpc.xml
+      ${CMAKE_BINARY_DIR}/lib/coverage.flow.xml
+      ${CMAKE_BINARY_DIR}/packages/bin/TestHarness.exe
+      ${CMAKE_BINARY_DIR}/packages/bin/TraceLogHelper.dll)
+    list(APPEND copy_sources
+      ${CMAKE_BINARY_DIR}/bin/coverage.fdbserver.xml
+      ${CMAKE_BINARY_DIR}/lib/coverage.fdbclient.xml
+      ${CMAKE_BINARY_DIR}/lib/coverage.fdbrpc.xml
+      ${CMAKE_BINARY_DIR}/lib/coverage.flow.xml
+      ${CMAKE_BINARY_DIR}/packages/bin/TestHarness.exe
+      ${CMAKE_BINARY_DIR}/packages/bin/TraceLogHelper.dll)
+  endif()
+
   add_custom_command(
     OUTPUT ${package_files}
-    DEPENDS ${CMAKE_BINARY_DIR}/CMakeCache.txt
-            ${CMAKE_BINARY_DIR}/packages/bin/fdbserver
-            ${CMAKE_BINARY_DIR}/bin/coverage.fdbserver.xml
-            ${CMAKE_BINARY_DIR}/lib/coverage.fdbclient.xml
-            ${CMAKE_BINARY_DIR}/lib/coverage.fdbrpc.xml
-            ${CMAKE_BINARY_DIR}/lib/coverage.flow.xml
-            ${CMAKE_BINARY_DIR}/packages/bin/TestHarness.exe
-            ${CMAKE_BINARY_DIR}/packages/bin/TraceLogHelper.dll
+    DEPENDS ${package_dependencies}
     COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_BINARY_DIR}/CMakeCache.txt ${STAGE_OUT_DIR}
-    COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_BINARY_DIR}/packages/bin/fdbserver
-                                     ${CMAKE_BINARY_DIR}/bin/coverage.fdbserver.xml
-                                     ${CMAKE_BINARY_DIR}/lib/coverage.fdbclient.xml
-                                     ${CMAKE_BINARY_DIR}/lib/coverage.fdbrpc.xml
-                                     ${CMAKE_BINARY_DIR}/lib/coverage.flow.xml
-                                     ${CMAKE_BINARY_DIR}/packages/bin/TestHarness.exe
-                                     ${CMAKE_BINARY_DIR}/packages/bin/TraceLogHelper.dll
-                                     ${STAGE_OUT_DIR}/bin
+    COMMAND ${CMAKE_COMMAND} -E copy ${copy_sources} ${STAGE_OUT_DIR}/bin
     COMMENT "Copying files for ${STAGE_CONTEXT} package"
     )
 
@@ -305,7 +316,10 @@ function(create_correctness_package)
     COMMENT "Package correctness archive"
     )
   add_custom_target(package_tests ALL DEPENDS ${tar_file})
-  add_dependencies(package_tests strip_only_fdbserver TestHarness)
+  add_dependencies(package_tests strip_only_fdbserver)
+  if(NOT FDB_USE_PYTHON_CODEGEN)
+    add_dependencies(package_tests TestHarness)
+  endif()
   set(unversioned_tar_file "${CMAKE_BINARY_DIR}/packages/correctness.tar.gz")
   add_custom_command(
     OUTPUT "${unversioned_tar_file}"
@@ -339,7 +353,10 @@ function(create_long_running_correctness_package)
     COMMENT "Package long running correctness archive"
     )
   add_custom_target(package_long_running_tests ALL DEPENDS ${tar_file})
-  add_dependencies(package_long_running_tests strip_only_fdbserver TestHarness)
+  add_dependencies(package_long_running_tests strip_only_fdbserver)
+  if(NOT FDB_USE_PYTHON_CODEGEN)
+    add_dependencies(package_long_running_tests TestHarness)
+  endif()
   set(unversioned_tar_file "${CMAKE_BINARY_DIR}/packages/long_running_correctness.tar.gz")
   add_custom_command(
     OUTPUT "${unversioned_tar_file}"
@@ -374,7 +391,10 @@ function(create_valgrind_correctness_package)
       COMMENT "Package valgrind correctness archive"
       )
     add_custom_target(package_valgrind_tests ALL DEPENDS ${tar_file})
-    add_dependencies(package_valgrind_tests strip_only_fdbserver TestHarness)
+    add_dependencies(package_valgrind_tests strip_only_fdbserver)
+    if(NOT FDB_USE_PYTHON_CODEGEN)
+      add_dependencies(package_valgrind_tests TestHarness)
+    endif()
     set(unversioned_tar_file "${CMAKE_BINARY_DIR}/packages/valgrind.tar.gz")
     add_custom_command(
       OUTPUT "${unversioned_tar_file}"
@@ -578,6 +598,7 @@ else()
 endif()
 string(APPEND test_venv_cmd "&& ${test_venv_activate} ")
 string(APPEND test_venv_cmd "&& pip install --upgrade pip ")
+string(APPEND test_venv_cmd "&& pip install setuptools ")
 string(APPEND test_venv_cmd "&& pip install -r ${CMAKE_SOURCE_DIR}/tests/TestRunner/requirements.txt")
 string(APPEND test_venv_cmd "&& (cd ${CMAKE_BINARY_DIR}/bindings/python && python3 setup.py install) ")
 add_test(

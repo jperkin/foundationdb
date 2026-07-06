@@ -657,7 +657,7 @@ void workerThread(const ThreadArgs& thread_args) {
 	logr = Logger(WorkerProcess{}, args.verbose, process_idx, thread_idx);
 	thread_stats.startThreadTimer();
 
-	logr.debug("started, tid: {}", reinterpret_cast<uint64_t>(pthread_self()));
+	logr.debug("started, tid: {}", (uint64_t)pthread_self());
 
 	const auto thread_tps =
 	    args.tpsmax == 0 ? 0

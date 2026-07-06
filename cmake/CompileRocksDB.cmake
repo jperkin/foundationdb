@@ -35,10 +35,20 @@ set(RocksDB_CMAKE_ARGS
   -DCMAKE_POSITION_INDEPENDENT_CODE=True
 )
 
+set(RocksDB_PATCH_COMMAND "")
+if(CMAKE_SYSTEM_NAME STREQUAL "SunOS")
+  # Apply patches needed for RocksDB to compile on illumos/Solaris.
+  # Use --forward so the step is idempotent if the patch was already applied.
+  set(RocksDB_PATCH_COMMAND
+    sh -c
+    "patch --forward --batch -p1 -i '${CMAKE_SOURCE_DIR}/cmake/patches/rocksdb-8.11.4-solaris-perf_context.patch' || true")
+endif()
+
 if(ROCKSDB_FOUND)
   ExternalProject_Add(rocksdb
     SOURCE_DIR "${RocksDB_ROOT}"
     DOWNLOAD_COMMAND ""
+    PATCH_COMMAND ${RocksDB_PATCH_COMMAND}
     CMAKE_ARGS ${RocksDB_CMAKE_ARGS}
     BUILD_BYPRODUCTS <BINARY_DIR>/librocksdb.a
     INSTALL_COMMAND ""
@@ -51,6 +61,7 @@ else()
   ExternalProject_Add(rocksdb
     URL https://github.com/facebook/rocksdb/archive/refs/tags/v8.11.4.tar.gz
     URL_HASH SHA256=1b84c7d7214360fd536349917c57ebd5030d5b4fc214a343ba628b0c6e3d2711
+    PATCH_COMMAND ${RocksDB_PATCH_COMMAND}
     CMAKE_ARGS ${RocksDB_CMAKE_ARGS}
     BUILD_BYPRODUCTS <BINARY_DIR>/librocksdb.a
     INSTALL_COMMAND ""

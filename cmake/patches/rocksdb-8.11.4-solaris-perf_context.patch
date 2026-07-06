@@ -1,0 +1,33 @@
+--- a/monitoring/perf_context.cc
++++ b/monitoring/perf_context.cc
+@@ -163,8 +163,18 @@
+ // Put here just to make get_perf_context() simple without ifdef.
+ PerfContext perf_context;
+ #else
++#if defined(OS_SOLARIS)
++// perf_context_imp.h defines:
++//   extern thread_local PerfContext perf_context_;  (trailing underscore)
++//   #define perf_context (*get_perf_context())
++// The variable must use the trailing-underscore name so that this macro
++// does not expand "thread_local PerfContext perf_context;" into the
++// invalid "thread_local PerfContext (*get_perf_context());".
++thread_local PerfContext perf_context_;
++#else
+ thread_local PerfContext perf_context;
+ #endif
++#endif
+ 
+ PerfContext* get_perf_context() {
+   static_assert(sizeof(PerfContextBase) == sizeof(PerfContextInt));
+@@ -188,7 +198,11 @@
+                 offsetof(PerfContextByLevelInt, x));
+   DEF_PERF_CONTEXT_LEVEL_METRICS(EMIT_OFFSET_ASSERTION)
+ #undef EMIT_OFFSET_ASSERTION
++#if defined(OS_SOLARIS)
++  return &perf_context_;
++#else
+   return &perf_context;
++#endif
+ }
+ 
+ PerfContext::~PerfContext() {

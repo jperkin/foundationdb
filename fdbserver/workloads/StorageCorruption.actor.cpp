@@ -45,18 +45,17 @@ struct StorageCorruptionWorkload : TestWorkload {
 	void disableFailureInjectionWorkloads(std::set<std::string>& out) const override { out.insert("all"); }
 
 	ACTOR static Future<Void> _start(Self* self, Database cx) {
+		// Register before corruption begins to catch all ConsistencyCheckFailure events
+		ProcessEvents::uncancellableEvent("ConsistencyCheckFailure"_sr,
+		                                  [](StringRef, std::any const&, Error const&) {
+			                                  TraceEvent("NegativeTestSuccess").suppressFor(1e9).log();
+		                                  });
 		wait(success(setDDMode(cx, 0)));
 		self->bugInjector.enable();
 		wait(delay(self->testDuration));
 		self->bug->corruptionProbability = 0.0;
 		TraceEvent("CorruptionInjections").detail("NumCorruptions", self->bug->numHits()).log();
 		self->bugInjector.disable();
-		ProcessEvents::uncancellableEvent("ConsistencyCheckFailure"_sr,
-		                                  [](StringRef, std::any const& data, Error const&) {
-			                                  if (std::any_cast<BaseTraceEvent*>(data)->getSeverity() == SevError) {
-				                                  TraceEvent("NegativeTestSuccess");
-			                                  }
-		                                  });
 		wait(success(setDDMode(cx, 1)));
 		return Void();
 	}

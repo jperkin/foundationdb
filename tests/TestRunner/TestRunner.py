@@ -48,6 +48,8 @@ class LogParser:
         self.infile = infile
         self.backtraces = []
         self.result = True
+        self.is_negative_test = False
+        self.negative_test_success = False
         self.address_re = re.compile(r"(0x[0-9a-f]+\s+)+")
         self.aggregationPolicy = aggregation_policy
         self.symbolicateBacktraces = symbolicate_backtraces
@@ -125,8 +127,11 @@ class LogParser:
                     continue
                 if "Type" not in obj:
                     continue
+                if obj.get("Type") == "NegativeTestSuccess":
+                    self.negative_test_success = True
                 if (
-                    obj["Severity"] == "40"
+                    not self.is_negative_test
+                    and obj["Severity"] == "40"
                     and obj.get("ErrorIsInjectedFault", None) != "1"
                 ):
                     self.fail()
@@ -154,7 +159,7 @@ class LogParser:
     def process_return_codes(self, return_codes):
         for (command, return_code) in return_codes.items():
             return_code_trace = {}
-            if return_code != 0:
+            if return_code != 0 and not self.is_negative_test:
                 return_code_trace["Severity"] = "40"
                 return_code_trace["Type"] = "TestFailure"
                 self.fail()
@@ -278,8 +283,10 @@ def process_traces(
     log_format,
     return_codes,
     cmake_seed,
+    is_negative_test=False,
 ):
     res = True
+    negative_test_success = False
     backtraces = []
     parser = None
     if log_format == "json":
@@ -290,6 +297,7 @@ def process_traces(
         parser = XMLParser(
             basedir, testname, None, out, aggregation_policy, symbolicate_backtraces
         )
+    parser.is_negative_test = is_negative_test
     parser.process_return_codes(return_codes)
     res = parser.result
     for trace in get_traces(path, log_format):
@@ -311,10 +319,16 @@ def process_traces(
                 aggregation_policy,
                 symbolicate_backtraces,
             )
-        if not res:
+        parser.is_negative_test = is_negative_test
+        if not is_negative_test and not res:
             parser.fail()
         parser.process_traces()
-        res = res and parser.result
+        if parser.negative_test_success:
+            negative_test_success = True
+        if not is_negative_test:
+            res = res and parser.result
+    if is_negative_test:
+        res = negative_test_success
     parser.write_object({"CMakeSEED": str(cmake_seed)})
     return res
 
@@ -375,6 +389,7 @@ class RestartTestPolicy:
 
 
 def run_simulation_test(basedir, options):
+    is_negative_test = options.name is not None and options.name.startswith("negative/")
     config = ""
     binary_ext = ""
     if sys.platform == "win32":
@@ -460,6 +475,7 @@ def run_simulation_test(basedir, options):
                 options.log_format,
                 return_codes,
                 options.seed,
+                is_negative_test,
             )
 
         else:
@@ -476,10 +492,11 @@ def run_simulation_test(basedir, options):
                     options.log_format,
                     return_codes,
                     options.seed,
+                    is_negative_test,
                 )
                 f.seek(pos)
                 os.lockf(f.fileno(), os.F_ULOCK, 0)
-        if proc.returncode != 0 or not res:
+        if (proc.returncode != 0 or not res) and not is_negative_test:
             break
     if options.keep_logs == "NONE" or options.keep_logs == "FAILED" and res:
         print("Deleting old logs in {}".format(wd))
@@ -496,6 +513,8 @@ def run_simulation_test(basedir, options):
     if len(os.listdir(wd)) == 0:
         print("Delete {} - empty".format(wd))
         os.rmdir(wd)
+    if is_negative_test:
+        return res and proc.returncode >= 0
     return res and proc.returncode == 0
 
 

@@ -40,6 +40,8 @@
 #include "flow/DeterministicRandom.h"
 #include "flow/Trace.h"
 #include "fdbserver/QuietDatabase.h"
+#include "fdbserver/StorageCorruptionBug.h"
+#include "flow/ProcessEvents.h"
 #include "flow/actorcompiler.h" // This must be the last #include.
 
 // Core of the data consistency checking (checkDataConsistency) and many of the supporting functions are shared between
@@ -825,29 +827,45 @@ ACTOR Future<Void> checkDataConsistency(Database cx,
 									         ->getProcessByAddress(
 									             (storageServerInterfaces)[firstValidServer].address())
 									         ->locality.dcId());
-									TraceEvent(isExpectedTSSMismatch || isFailed ? SevWarn : SevError,
-									           "ConsistencyCheck_DataInconsistent")
-									    .detail(format("StorageServer%d", j).c_str(), storageServers[j].toString())
-									    .detail(format("StorageServer%d", firstValidServer).c_str(),
-									            storageServers[firstValidServer].toString())
-									    .detail("ShardBegin", req.begin.getKey())
-									    .detail("ShardEnd", req.end.getKey())
-									    .detail("VersionNumber", req.version)
-									    .detail(format("Server%dUniques", j).c_str(), currentUniques)
-									    .detail(format("Server%dUniqueKey", j).c_str(), currentUniqueKey)
-									    .detail(format("Server%dUniques", firstValidServer).c_str(), referenceUniques)
-									    .detail(format("Server%dUniqueKey", firstValidServer).c_str(),
-									            referenceUniqueKey)
-									    .detail("ValueMismatches", valueMismatches)
-									    .detail("ValueMismatchKey", valueMismatchKey)
-									    .detail("MatchingKVPairs", matchingKVPairs)
-									    .detail("IsTSS",
-									            storageServerInterfaces[j].isTss() ||
-									                    storageServerInterfaces[firstValidServer].isTss()
-									                ? "True"
-									                : "False");
+									// Injected corruption from StorageCorruption negative test is expected
+									bool isInjectedCorruption =
+									    !isExpectedTSSMismatch && !isFailed && g_network->isSimulated() &&
+									    SimBugInjector().get<StorageCorruptionBug>(StorageCorruptionBugID(),
+									                                                /*getDisabled=*/true) != nullptr;
+									{
+										TraceEvent ev(
+										    isExpectedTSSMismatch || isFailed || isInjectedCorruption ? SevWarn
+										                                                              : SevError,
+										    "ConsistencyCheck_DataInconsistent");
+										ev.detail(format("StorageServer%d", j).c_str(), storageServers[j].toString())
+										    .detail(format("StorageServer%d", firstValidServer).c_str(),
+										            storageServers[firstValidServer].toString())
+										    .detail("ShardBegin", req.begin.getKey())
+										    .detail("ShardEnd", req.end.getKey())
+										    .detail("VersionNumber", req.version)
+										    .detail(format("Server%dUniques", j).c_str(), currentUniques)
+										    .detail(format("Server%dUniqueKey", j).c_str(), currentUniqueKey)
+										    .detail(format("Server%dUniques", firstValidServer).c_str(),
+										            referenceUniques)
+										    .detail(format("Server%dUniqueKey", firstValidServer).c_str(),
+										            referenceUniqueKey)
+										    .detail("ValueMismatches", valueMismatches)
+										    .detail("ValueMismatchKey", valueMismatchKey)
+										    .detail("MatchingKVPairs", matchingKVPairs)
+										    .detail("IsTSS",
+										            storageServerInterfaces[j].isTss() ||
+										                    storageServerInterfaces[firstValidServer].isTss()
+										                ? "True"
+										                : "False");
+										if (isInjectedCorruption) {
+											ProcessEvents::trigger(
+											    "ConsistencyCheckFailure"_sr,
+											    std::any(static_cast<BaseTraceEvent*>(&ev)),
+											    success());
+										}
+									}
 
-									if (!isExpectedTSSMismatch && !isFailed) {
+									if (!isExpectedTSSMismatch && !isFailed && !isInjectedCorruption) {
 										testFailure("Data inconsistent", performQuiescentChecks, success, true);
 									} else if (isFailed) {
 										// If the storage servers are not live, we should retry.

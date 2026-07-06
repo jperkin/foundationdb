@@ -12330,6 +12330,7 @@ void StorageServerDisk::writeMutationsBuggy(const VectorRef<MutationRef>& mutati
 	auto bug = SimBugInjector().get<StorageCorruptionBug>(StorageCorruptionBugID());
 	if (!bug) {
 		writeMutations(mutations, debugVersion, debugContext);
+		return;
 	}
 	int begin = 0;
 	while (begin < mutations.size()) {

@@ -3,6 +3,7 @@
 import os
 from pathlib import Path
 import platform
+import sys
 import shutil
 import stat
 from urllib import request
@@ -49,7 +50,10 @@ class FdbBinaryDownloader:
         assert self.build_dir.exists(), "{} does not exist".format(build_dir)
         assert self.build_dir.is_dir(), "{} is not a directory".format(build_dir)
         self.platform = platform.machine()
-        assert self.platform in SUPPORTED_PLATFORMS, "Unsupported platform {}".format(self.platform)
+        if self.platform not in SUPPORTED_PLATFORMS:
+            print("Skipping upgrade test: platform '{}' is not supported (supported: {})".format(
+                self.platform, SUPPORTED_PLATFORMS))
+            sys.exit(0)
         self.download_dir = self.build_dir.joinpath("tmp", "old_binaries")
         self.local_binary_repo = Path(LOCAL_OLD_BINARY_REPO)
         if not self.local_binary_repo.exists():

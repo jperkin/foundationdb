@@ -18,6 +18,10 @@ if(NOT WIN32)
   add_subdirectory(linenoise)
   add_subdirectory(debug_determinism)
   add_subdirectory(monitoring)
-  add_subdirectory(TraceLogHelper)
-  add_subdirectory(TestHarness)
+  if(NOT FDB_USE_PYTHON_CODEGEN)
+    # TraceLogHelper and TestHarness are C# projects that require mono/mcs.
+    # Skip them on platforms that use the Python code-gen path (e.g. illumos).
+    add_subdirectory(TraceLogHelper)
+    add_subdirectory(TestHarness)
+  endif()
 endif()

@@ -13,18 +13,21 @@ indefinitely in do_map_after_open waiting for the size header to appear.
 Treat EINVAL as "fallocate unsupported on this fd" and fall through to
 ftruncate, which is always correct for shm_open fds on any POSIX platform.
 
+Context regenerated for boost 1.78 (7.3's bundled version): its error_info
+line is `err(system_error_code())`, not the `err(ret)` of boost >= 1.79.
+
 --- a/boost/interprocess/shared_memory_object.hpp
 +++ b/boost/interprocess/shared_memory_object.hpp
-@@ -465,7 +465,11 @@ inline void shared_memory_object::truncate(offset_t length)
+@@ -462,7 +462,11 @@
        ret = posix_fallocate(m_handle, 0, length);
     }
-
+ 
 -   if (ret && ret != EOPNOTSUPP && ret != ENODEV){
 +   // EINVAL added for illumos: posix_fallocate() there routes through
 +   // fcntl(F_ALLOCSP) which is not supported on shm_open() fds and returns
 +   // EINVAL.  Falling through to ftruncate is always correct for shm fds
 +   // on any POSIX platform.
 +   if (ret && ret != EOPNOTSUPP && ret != ENODEV && ret != EINVAL){
-       error_info err(ret);
+       error_info err(system_error_code());
        throw interprocess_exception(err);
     }

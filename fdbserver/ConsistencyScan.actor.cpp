@@ -861,7 +861,7 @@ ACTOR Future<Void> checkDataConsistency(Database cx,
 											ProcessEvents::trigger(
 											    "ConsistencyCheckFailure"_sr,
 											    std::any(static_cast<BaseTraceEvent*>(&ev)),
-											    success());
+											    ::success());
 										}
 									}
 

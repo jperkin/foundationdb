@@ -67,12 +67,14 @@ function(compile_boost)
   # illumos: posix_fallocate(3C) on shm_open(3C) fds returns EINVAL, which
   # upstream boost::interprocess does not tolerate.  See patch header for
   # details.  Applied only on SunOS to keep other platforms bit-identical.
+  # PATCH_COMMAND runs without a shell, so wrap in sh -c.  The reverse
+  # dry-run makes re-runs a quiet no-op while a genuine reject still fails
+  # the step (a plain `|| true` would silently build unpatched boost).
   set(BOOST_PATCH_COMMAND "")
   if(CMAKE_SYSTEM_NAME STREQUAL "SunOS")
+    set(boost_patch_file ${CMAKE_SOURCE_DIR}/cmake/boost-illumos-fallocate-fallback.patch)
     set(BOOST_PATCH_COMMAND
-        patch -p1 --forward -r -
-              -i ${CMAKE_SOURCE_DIR}/cmake/boost-illumos-fallocate-fallback.patch
-        || true)
+        sh -c "patch -p1 -R -s -f --dry-run -i '${boost_patch_file}' >/dev/null 2>&1 || patch -p1 -i '${boost_patch_file}'")
   endif()
 
   ExternalProject_add("${COMPILE_BOOST_TARGET}Project"

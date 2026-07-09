@@ -48,7 +48,8 @@ jobs:
             mkdir -p /var/tmp/build && cd /var/tmp/build
             # OmniOS ships shared-only OpenSSL; no static libssl/libcrypto exist
             cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DSSD_ROCKSDB_EXPERIMENTAL=OFF \
-                -DENABLE_SIMULATION_TESTS=ON -DOPENSSL_USE_STATIC_LIBS=FALSE "$SRC"
+                -DENABLE_SIMULATION_TESTS=ON -DOPENSSL_USE_STATIC_LIBS=FALSE \
+                -DBUILD_DOCUMENTATION=OFF "$SRC"
             # 'packages' runs the ctfconvert + strip -x pipeline whose output
             # the TGZ install rules package.
             ninja -j4 all packages

@@ -31,19 +31,24 @@ jobs:
           mem: 12288
           envs: "RUN_TESTS"
           prepare: |
-            pkg install developer/gcc14 developer/debug/ctf ooce/developer/cmake ooce/developer/ninja runtime/python-313
+            pkg install developer/gcc14 developer/build/onbld developer/object-file \
+              ooce/developer/cmake ooce/developer/ninja \
+              runtime/python-313 library/python-3/setuptools-313 \
+              library/security/openssl-3 library/zlib
           # Build outside the workspace so copyback only returns out/.
           run: |
             set -e
-            export CC=/usr/gcc/14/bin/gcc CXX=/usr/gcc/14/bin/g++
-            export PATH=/opt/ooce/bin:$PATH
+            export CC=/opt/gcc-14/bin/gcc CXX=/opt/gcc-14/bin/g++
+            # cmake/ninja from ooce, ctfconvert from onbld
+            export PATH=/opt/ooce/bin:/opt/onbld/bin/i386:$PATH
             # bundled sub-projects still declare cmake_minimum_required < 3.5
             export CMAKE_POLICY_VERSION_MINIMUM=3.5
             SRC=$PWD
 
             mkdir -p /var/tmp/build && cd /var/tmp/build
+            # OmniOS ships shared-only OpenSSL; no static libssl/libcrypto exist
             cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DSSD_ROCKSDB_EXPERIMENTAL=OFF \
-                -DENABLE_SIMULATION_TESTS=ON "$SRC"
+                -DENABLE_SIMULATION_TESTS=ON -DOPENSSL_USE_STATIC_LIBS=FALSE "$SRC"
             # 'packages' runs the ctfconvert + strip -x pipeline whose output
             # the TGZ install rules package.
             ninja -j4 all packages

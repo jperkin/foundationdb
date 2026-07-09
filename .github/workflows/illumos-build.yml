@@ -43,8 +43,6 @@ jobs:
             export PATH=/opt/ooce/bin:/opt/onbld/bin/i386:$PATH
             # bundled sub-projects still declare cmake_minimum_required < 3.5
             export CMAKE_POLICY_VERSION_MINIMUM=3.5
-            # temporary: trace the ctfconvert EINVAL on fdbmonitor
-            export LIBCTF_DEBUG=1
             SRC=$PWD
 
             mkdir -p /var/tmp/build && cd /var/tmp/build

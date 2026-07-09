@@ -1,0 +1,75 @@
+name: illumos-build
+
+on:
+  push:
+    branches: [ 'illumos-*' ]
+    # release tags are prefixed to stay clear of upstream FDB version tags.
+    tags: [ 'illumos-v*' ]
+  workflow_dispatch:
+    inputs:
+      run_tests:
+        description: Run ctest after building
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  build-illumos:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # 5.0.1
+
+      - name: Build FoundationDB in OmniOS VM
+        uses: vmactions/omnios-vm@7f2be0b927aad1a78498c8aeeac4c4ce1fabd322 # v1.3.3
+        env:
+          RUN_TESTS: ${{ inputs.run_tests }}
+        with:
+          release: r151058
+          mem: 12288
+          envs: "RUN_TESTS"
+          prepare: |
+            pkg install developer/gcc14 developer/debug/ctf ooce/developer/cmake ooce/developer/ninja runtime/python-313
+          # Build outside the workspace so copyback only returns out/.
+          run: |
+            set -e
+            export CC=/usr/gcc/14/bin/gcc CXX=/usr/gcc/14/bin/g++
+            export PATH=/opt/ooce/bin:$PATH
+            # bundled sub-projects still declare cmake_minimum_required < 3.5
+            export CMAKE_POLICY_VERSION_MINIMUM=3.5
+            SRC=$PWD
+
+            mkdir -p /var/tmp/build && cd /var/tmp/build
+            cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DSSD_ROCKSDB_EXPERIMENTAL=OFF \
+                -DENABLE_SIMULATION_TESTS=ON "$SRC"
+            # 'packages' runs the ctfconvert + strip -x pipeline whose output
+            # the TGZ install rules package.
+            ninja -j4 all packages
+            cpack -G TGZ -B /var/tmp/pkg
+            mkdir -p "$SRC/out"
+            cp /var/tmp/pkg/foundationdb-*.tar.gz* "$SRC/out/"
+
+            if [ "$RUN_TESTS" = "true" ]; then
+              ctest --output-on-failure -j2
+            fi
+
+      - name: Upload artifact
+        # upload what was built even if the opt-in test run failed
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # 4.6.1
+        with:
+          name: foundationdb-illumos
+          path: out/*
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Attach to release (tags)
+        if: startsWith(github.ref, 'refs/tags/illumos-v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" out/* \
+            --title "$GITHUB_REF_NAME" --generate-notes || \
+          gh release upload "$GITHUB_REF_NAME" out/* --clobber

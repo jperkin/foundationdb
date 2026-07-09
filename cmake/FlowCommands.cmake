@@ -113,12 +113,15 @@ function(strip_debug_symbols target)
   endif()
   set(out_file "${path}/${out_name}")
   if(CMAKE_SYSTEM_NAME STREQUAL "SunOS")
-    # illumos strip(1) uses -x, has no -o, and strips in place; copy then strip the copy
+    # Convert the DWARF to CTF, then strip -x: the packaged binary keeps its
+    # symbol table and full CTF for mdb/dtrace without the DWARF bulk.
+    # illumos strip has no -o and strips in place, so work on the copy.
     add_custom_command(OUTPUT "${out_file}"
       COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:${target}> "${out_file}"
-      COMMAND strip -x "${out_file}"
+      COMMAND ctfconvert -i -k -m "${out_file}"
+      COMMAND /usr/bin/strip -x "${out_file}"
       DEPENDS ${target}
-      COMMENT "Stripping symbols from ${target}")
+      COMMENT "CTF convert and strip ${target}")
   else()
     list(APPEND strip_command -o "${out_file}")
     add_custom_command(OUTPUT "${out_file}"

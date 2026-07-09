@@ -28,7 +28,7 @@ jobs:
           RUN_TESTS: ${{ inputs.run_tests }}
         with:
           release: r151058
-          mem: 13312
+          mem: 12288
           envs: "RUN_TESTS"
           prepare: |
             pkg install build-essential developer/build/onbld developer/versioning/git \
@@ -59,7 +59,7 @@ jobs:
                 -DBUILD_DOCUMENTATION=OFF "$SRC"
             # 'packages' runs the ctfconvert + strip -x pipeline whose output
             # the TGZ install rules package.
-            ninja -j4 all packages
+            ninja -j3 all packages
             cpack -G TGZ -B /var/tmp/pkg
             mkdir -p "$SRC/out"
             cp /var/tmp/pkg/foundationdb-*.tar.gz* "$SRC/out/"

@@ -28,13 +28,20 @@ jobs:
           RUN_TESTS: ${{ inputs.run_tests }}
         with:
           release: r151058
-          mem: 12288
+          mem: 13312
           envs: "RUN_TESTS"
           prepare: |
             pkg install build-essential developer/build/onbld developer/versioning/git \
               ooce/developer/cmake ooce/developer/ninja \
               runtime/python-313 library/python-3/setuptools-313 \
               library/security/openssl-3 library/zlib
+            # illumos does not overcommit memory: gcc VA peaks on the heavy
+            # -gdwarf-4 TUs must be backed by RAM+swap, and the image has
+            # little swap for a 12 GB VM.
+            swap -sh
+            zfs create -V 8G rpool/swap2
+            swap -a /dev/zvol/dsk/rpool/swap2
+            swap -sh
           # Build outside the workspace so copyback only returns out/.
           run: |
             set -e

@@ -31,7 +31,7 @@ jobs:
           mem: 12288
           envs: "RUN_TESTS"
           prepare: |
-            pkg install developer/gcc14 developer/build/onbld developer/object-file \
+            pkg install build-essential developer/build/onbld developer/versioning/git \
               ooce/developer/cmake ooce/developer/ninja \
               runtime/python-313 library/python-3/setuptools-313 \
               library/security/openssl-3 library/zlib

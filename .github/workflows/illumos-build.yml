@@ -54,12 +54,16 @@ jobs:
 
             mkdir -p /var/tmp/build && cd /var/tmp/build
             # OmniOS ships shared-only OpenSSL; no static libssl/libcrypto exist
+            # cap gcc's GC heap growth: the big fdbserver actor TUs with
+            # -gdwarf-4 otherwise balloon past RAM and thrash the guest
             cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DSSD_ROCKSDB_EXPERIMENTAL=OFF \
                 -DENABLE_SIMULATION_TESTS=ON -DOPENSSL_USE_STATIC_LIBS=FALSE \
-                -DBUILD_DOCUMENTATION=OFF "$SRC"
+                -DBUILD_DOCUMENTATION=OFF \
+                -DCMAKE_CXX_FLAGS="--param ggc-min-expand=20 --param ggc-min-heapsize=131072" \
+                "$SRC"
             # 'packages' runs the ctfconvert + strip -x pipeline whose output
             # the TGZ install rules package.
-            ninja -j3 all packages
+            ninja -j2 all packages
             cpack -G TGZ -B /var/tmp/pkg
             mkdir -p "$SRC/out"
             cp /var/tmp/pkg/foundationdb-*.tar.gz* "$SRC/out/"

@@ -36,12 +36,21 @@ jobs:
               runtime/python-313 library/python-3/setuptools-313 \
               library/security/openssl-3 library/zlib
             # illumos does not overcommit memory: gcc VA peaks on the heavy
-            # -gdwarf-4 TUs must be backed by RAM+swap, and the image has
-            # little swap for a 12 GB VM.
+            # TUs must be backed by RAM+swap, and the image has little swap
+            # for a 12 GB VM.
             swap -sh
             zfs create -V 8G rpool/swap2
             swap -a /dev/zvol/dsk/rpool/swap2
             swap -sh
+            # clamp the ARC to 512M: pageout to a zvol fights ARC eviction
+            # and can livelock the guest (runs 29047171702, 29093312577 died
+            # unresponsive mid-swap). arc_c/arc_c_max are arc_stats members,
+            # not symbols, so resolve their addresses for the mdb write.
+            for m in arcstat_c arcstat_c_max; do
+              addr=$(echo "::print -a arc_stats $m.value.ui64" | mdb -k | awk '{print $1}')
+              echo "$addr/Z 0x20000000" | mdb -kw
+            done
+            echo '::print -d arc_stats arcstat_c.value.ui64 arcstat_c_max.value.ui64' | mdb -k
           # Build outside the workspace so copyback only returns out/.
           run: |
             set -e
@@ -62,7 +71,7 @@ jobs:
                 "$SRC"
             # 'packages' runs the strip -x pipeline whose output the TGZ
             # install rules package.
-            ninja -j4 all packages
+            ninja -j3 all packages
             cpack -G TGZ -B /var/tmp/pkg
             mkdir -p "$SRC/out"
             cp /var/tmp/pkg/foundationdb-*.tar.gz* "$SRC/out/"

@@ -47,10 +47,10 @@ jobs:
             # unresponsive mid-swap). arc_c/arc_c_max are arc_stats members,
             # not symbols, so resolve their addresses for the mdb write.
             for m in arcstat_c arcstat_c_max; do
-              addr=$(echo "::print -a arc_stats $m.value.ui64" | mdb -k | awk '{print $1}')
+              addr=$(echo "arc_stats::print -a arc_stats_t $m.value.ui64" | mdb -k | awk '{print $1}')
               echo "$addr/Z 0x20000000" | mdb -kw
             done
-            echo '::print -d arc_stats arcstat_c.value.ui64 arcstat_c_max.value.ui64' | mdb -k
+            echo 'arc_stats::print -d arc_stats_t arcstat_c.value.ui64 arcstat_c_max.value.ui64' | mdb -k
           # Build outside the workspace so copyback only returns out/.
           run: |
             set -e

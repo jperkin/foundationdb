@@ -206,7 +206,10 @@ else()
   if(CMAKE_SYSTEM_NAME STREQUAL "SunOS")
     # ctfconvert (see strip_debug_symbols) reads DWARF 2/4 only; gcc >= 14
     # emits DWARF 5 by default.
-    add_compile_options("$<${is_cxx_compile}:-gdwarf-4>")
+    if(NOT DEFINED SUNOS_DEBUG_FLAG)
+      set(SUNOS_DEBUG_FLAG -gdwarf-4)
+    endif()
+    add_compile_options("$<${is_cxx_compile}:${SUNOS_DEBUG_FLAG}>")
   elseif(FDB_RELEASE OR FULL_DEBUG_SYMBOLS OR CMAKE_BUILD_TYPE STREQUAL "Debug")
     # Configure with FULL_DEBUG_SYMBOLS=ON to generate all symbols for debugging with gdb
     # Also generating full debug symbols in release builds. CPack will strip them out

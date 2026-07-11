@@ -199,7 +199,7 @@ class DDSketch : public DDSketchBase<DDSketch<T>, T> {
 public:
 	explicit DDSketch(double errorGuarantee = 0.005)
 	  : DDSketchBase<DDSketch<T>, T>(errorGuarantee), gamma((1.0 + errorGuarantee) / (1.0 - errorGuarantee)),
-	    multiplier(fastLogger::correctingFactor * log(2) / log(gamma)) {
+	    multiplier(fastLogger::correctingFactor * log(2.0) / log(gamma)) {
 		offset = getIndex(1.0 / DDSketchBase<DDSketch<T>, T>::EPS);
 		this->setBucketSize(2 * offset);
 	}

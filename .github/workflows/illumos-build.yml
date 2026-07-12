@@ -75,9 +75,11 @@ jobs:
             # and co-scheduled; three at once exceed RAM at any -g level and
             # paging kills the guest (runs 29093312577, 29097539037, 29106680200)
             ninja -j2 all packages
-            cpack -G TGZ -B /var/tmp/pkg
+            # InstallLayout.cmake pins CPACK_OUTPUT_FILE_PREFIX to
+            # $BUILD/packages; cpack -B cannot move it
+            cpack -G TGZ
             mkdir -p "$SRC/out"
-            cp /var/tmp/pkg/foundationdb-*.tar.gz* "$SRC/out/"
+            cp packages/foundationdb-*.tar.gz* "$SRC/out/"
 
             if [ "$RUN_TESTS" = "true" ]; then
               ctest --output-on-failure -j2

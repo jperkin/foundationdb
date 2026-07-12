@@ -12,7 +12,7 @@ else()
         doctest_proj
         PREFIX ${CMAKE_BINARY_DIR}/doctest
         GIT_REPOSITORY https://github.com/onqtam/doctest.git
-        GIT_TAG 7b9885133108ae301ddd16e2651320f54cafeba7 # v2.4.8
+        GIT_TAG ae7a13539fb71f270b87eb2e874fbac80bc8dda2 # v2.4.11: log10(unsigned) is ambiguous against illumos math_iso.h; fixed upstream after v2.4.8
         TIMEOUT 10
         CONFIGURE_COMMAND ""
         BUILD_COMMAND ""
